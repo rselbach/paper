@@ -1,0 +1,22 @@
+# Runtime data
+paper.db
+paper.db-*
+*.db
+*.db-*
+
+AGENTS.md
+CLAUDE.md
+
+# Go build/test outputs
+/paper
+*.test
+*.out
+coverage.out
+
+# Local environment
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+*.swp

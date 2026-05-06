@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Paper — one-view secret links</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <main class="shell">
+    <section class="hero" aria-label="Paper one-time secret links">
+      <p class="eyebrow">client-side sealed · one view · then ash</p>
+      <p class="lede compact-lede">
+        Write a note, seal it in your browser, and share a URL that burns after
+        one reveal. The server stores ciphertext only — not the juicy goblin bait.
+      </p>
+      <div class="security-strip" aria-label="Security properties">
+        <span>Web Crypto AES-GCM</span>
+        <span>URL-fragment key</span>
+        <span>SQLite ciphertext</span>
+        <span>Auto expiry</span>
+      </div>
+    </section>
+
+    <section class="panel" id="create-view" aria-labelledby="create-title" hidden>
+      <div class="panel-mark">01</div>
+      <h2 id="create-title">Seal a secret</h2>
+      <p class="muted">
+        The decryption key is placed after the <code>#</code> in the link, so
+        browsers keep it out of HTTP requests and server logs.
+      </p>
+
+      <form id="create-form" class="secret-form">
+        <label for="secret">Secret text</label>
+        <textarea id="secret" name="secret" maxlength="65536" spellcheck="false" placeholder="Troy and Abed hid the spare key in the Dreamatorium." required></textarea>
+        <div class="form-footer">
+          <span id="char-count">0 bytes</span>
+          <button class="button primary" type="submit">Generate one-time URL</button>
+        </div>
+      </form>
+
+      <div class="result-card" id="result" hidden>
+        <label for="share-url">Share this URL</label>
+        <div class="copy-row">
+          <input id="share-url" readonly>
+          <button class="button ghost" id="copy-link" type="button">Copy</button>
+        </div>
+        <p class="warning">Anyone with this full URL can reveal the secret once.</p>
+      </div>
+    </section>
+
+    <section class="panel reveal-panel" id="reveal-view" aria-labelledby="reveal-title" hidden>
+      <div class="panel-mark">∞</div>
+      <h2 id="reveal-title">A sealed note is waiting</h2>
+      <p class="muted">
+        Press reveal only when you are ready. The server deletes the encrypted
+        payload before handing it to this browser. Very spy movie, fewer hats.
+      </p>
+      <button class="button primary wide" id="reveal-button" type="button">Reveal and burn</button>
+      <pre class="secret-output" id="secret-output" hidden></pre>
+      <button class="button ghost" id="copy-secret" type="button" hidden>Copy revealed text</button>
+    </section>
+
+    <aside class="status" id="status" role="status" aria-live="polite"></aside>
+  </main>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
