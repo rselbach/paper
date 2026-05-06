@@ -395,24 +395,20 @@ input {
 
 @keyframes rise {
   from {
-    opacity: 0;
     transform: translateY(1rem);
   }
 
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
 
 @keyframes stamp {
   from {
-    opacity: 0;
     transform: rotate(-2deg) translateY(1.4rem) scale(0.96);
   }
 
   to {
-    opacity: 1;
     transform: rotate(-0.7deg) translateY(0) scale(1);
   }
 }
