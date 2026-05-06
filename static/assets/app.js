@@ -1,4 +1,8 @@
-const MAX_SECRET_BYTES = 64 * 1024;
+const MAX_SECRET_BYTES = (() => {
+  const meta = document.querySelector('meta[name="paper-max-bytes"]');
+  const parsed = parseInt(meta?.content ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 64 * 1024;
+})();
 
 const createView = document.querySelector("#create-view");
 const revealView = document.querySelector("#reveal-view");
@@ -8,10 +12,16 @@ const charCount = document.querySelector("#char-count");
 const result = document.querySelector("#result");
 const shareURL = document.querySelector("#share-url");
 const copyLink = document.querySelector("#copy-link");
+const expiryLine = document.querySelector("#expiry-line");
 const revealButton = document.querySelector("#reveal-button");
+const revealPanel = document.querySelector("#reveal-view");
+const revealPanelBody = revealPanel?.querySelector(".panel__body") ?? null;
 const secretOutput = document.querySelector("#secret-output");
 const copySecret = document.querySelector("#copy-secret");
 const statusBox = document.querySelector("#status");
+const fileIdCell = document.querySelector("#file-id");
+const dossierExpiry = document.querySelector("#dossier-expiry");
+const classificationStamp = document.querySelector("#classification-stamp");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -98,8 +108,52 @@ async function copyText(value, label) {
 
 function updateByteCount() {
   const bytes = encoder.encode(secretInput.value).length;
-  charCount.textContent = `${bytes.toLocaleString()} bytes`;
-  charCount.style.color = bytes > MAX_SECRET_BYTES ? "#6f1715" : "";
+  charCount.textContent = `${bytes.toLocaleString()} / ${MAX_SECRET_BYTES.toLocaleString()}`;
+  charCount.style.color = bytes > MAX_SECRET_BYTES ? "var(--accent)" : "";
+}
+
+function formatDossierTimestamp(date) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const min = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}Z`;
+}
+
+function setFileId(id) {
+  if (!fileIdCell || !id) {
+    return;
+  }
+  fileIdCell.textContent = id;
+}
+
+function formatExpiry(date) {
+  const diffMs = date.getTime() - Date.now();
+  const absDiff = Math.abs(diffMs);
+  const minutes = Math.round(diffMs / 60_000);
+  const hours = Math.round(diffMs / 3_600_000);
+  const days = Math.round(diffMs / 86_400_000);
+
+  let relative;
+  try {
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    if (absDiff >= 86_400_000) {
+      relative = rtf.format(days, "day");
+    } else if (absDiff >= 3_600_000) {
+      relative = rtf.format(hours, "hour");
+    } else {
+      relative = rtf.format(minutes, "minute");
+    }
+  } catch {
+    relative = date.toISOString();
+  }
+
+  const absolute = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+  return `${relative} (${absolute})`;
 }
 
 async function sealSecret(secret) {
@@ -166,10 +220,24 @@ async function createSecret(event) {
     const payload = await response.json();
     const url = `${payload.url}#${sealed.key}`;
     shareURL.value = url;
+    setFileId(sealed.id);
+    if (payload.expiresAt) {
+      const expiresAt = new Date(payload.expiresAt);
+      if (!Number.isNaN(expiresAt.getTime())) {
+        expiryLine.textContent = `Burns itself if unread ${formatExpiry(expiresAt)}.`;
+        expiryLine.hidden = false;
+        if (dossierExpiry) {
+          dossierExpiry.textContent = formatDossierTimestamp(expiresAt);
+        }
+      }
+    }
+    if (classificationStamp) {
+      classificationStamp.textContent = "ARMED";
+    }
     result.hidden = false;
     secretInput.value = "";
     updateByteCount();
-    setStatus("Secret sealed. Server received encrypted confetti only.", "ok");
+    setStatus("Sealed. Server received encrypted confetti only.", "ok");
     clearStatusSoon();
   } catch (error) {
     setStatus(`Could not create secret: ${error.message}`, "error");
@@ -203,7 +271,7 @@ async function revealSecret() {
   try {
     requireWebCrypto();
     const { key, rawKey } = await revealKeyMaterial();
-    const id = window.location.pathname.split("/").pop();
+    const id = window.location.pathname.replace(/\/+$/, "").split("/").pop();
     const response = await fetch(`/api/secrets/${encodeURIComponent(id)}/consume`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -228,6 +296,20 @@ async function revealSecret() {
     copySecret.hidden = false;
     revealButton.hidden = true;
     window.history.replaceState(null, "", window.location.pathname);
+    if (classificationStamp) {
+      classificationStamp.textContent = "DECLASSIFIED";
+    }
+    if (dossierExpiry) {
+      dossierExpiry.textContent = "BURNED";
+    }
+    if (revealPanelBody && !revealPanelBody.querySelector(".declassified-stamp")) {
+      const stamp = document.createElement("span");
+      stamp.className = "declassified-stamp";
+      stamp.setAttribute("aria-hidden", "true");
+      stamp.textContent = "DECLASSIFIED";
+      revealPanel.style.position = "relative";
+      revealPanel.appendChild(stamp);
+    }
     setStatus("Revealed. Server copy is ash now.", "ok");
     clearStatusSoon();
   } catch (error) {
@@ -242,18 +324,34 @@ function boot() {
   revealView.hidden = !isReveal;
 
   if (!isReveal) {
+    document.title = "Paper — seal a one-view note";
     secretInput.addEventListener("input", updateByteCount);
     createForm.addEventListener("submit", createSecret);
     copyLink.addEventListener("click", () => copyText(shareURL.value, "Link"));
     updateByteCount();
+    secretInput.focus();
+    return;
+  }
+
+  document.title = "Paper — sealed transmission";
+  const id = window.location.pathname.replace(/\/+$/, "").split("/").pop();
+  setFileId(id);
+  if (classificationStamp) {
+    classificationStamp.textContent = "EYES ONLY";
+  }
+  if (dossierExpiry) {
+    dossierExpiry.textContent = "ON REVEAL";
+  }
+  copySecret.addEventListener("click", () => copyText(secretOutput.textContent, "Secret"));
+
+  if (window.location.hash.length === 0) {
+    revealButton.disabled = true;
+    revealButton.setAttribute("aria-disabled", "true");
+    setStatus("This link is missing its #decryption-key fragment. Revealing now would burn the note for nothing — get the full URL.", "error");
     return;
   }
 
   revealButton.addEventListener("click", revealSecret);
-  copySecret.addEventListener("click", () => copyText(secretOutput.textContent, "Secret"));
-  if (window.location.hash.length === 0) {
-    setStatus("Missing the #key fragment. This link cannot decrypt the stored ciphertext.", "error");
-  }
 }
 
 boot();

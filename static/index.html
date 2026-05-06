@@ -3,67 +3,116 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Paper — one-view secret links</title>
+  <meta name="paper-max-bytes" content="__PAPER_MAX_BYTES__">
+  <title>Paper — one-view dead drop</title>
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
-  <main class="shell">
-    <section class="hero" aria-label="Paper one-time secret links">
-      <p class="eyebrow">client-side sealed · one view · then ash</p>
-      <p class="lede compact-lede">
-        Write a note, seal it in your browser, and share a URL that burns after
-        one reveal. The server stores ciphertext only — not the juicy goblin bait.
-      </p>
-      <div class="security-strip" aria-label="Security properties">
-        <span>Web Crypto AES-GCM</span>
-        <span>URL-fragment key</span>
-        <span>SQLite ciphertext</span>
-        <span>Auto expiry</span>
-      </div>
-    </section>
+  <div class="watermark" aria-hidden="true"><span>BURN AFTER READING</span></div>
+
+  <header class="classified-bar" role="banner">
+    <div class="classified-bar__inner">
+      <span class="classified-bar__brand">
+        <strong>PAPER</strong>
+        <span>// ONE-VIEW DEAD DROP // v1</span>
+      </span>
+      <span class="classified-bar__stamp" id="classification-stamp">TOP SECRET</span>
+    </div>
+  </header>
+
+  <dl class="dossier" aria-label="Document metadata">
+    <div>
+      <dt>File no.</dt>
+      <dd id="file-id">—</dd>
+    </div>
+    <div>
+      <dt>Cipher</dt>
+      <dd>AES-GCM-256</dd>
+    </div>
+    <div>
+      <dt>Key delivery</dt>
+      <dd>URL fragment</dd>
+    </div>
+    <div>
+      <dt>Expires</dt>
+      <dd id="dossier-expiry">PENDING</dd>
+    </div>
+  </dl>
+
+  <main class="document">
+    <h1 class="visually-hidden">Paper — one-view encrypted note transmitter</h1>
 
     <section class="panel" id="create-view" aria-labelledby="create-title" hidden>
-      <div class="panel-mark">01</div>
-      <h2 id="create-title">Seal a secret</h2>
-      <p class="muted">
-        The decryption key is placed after the <code>#</code> in the link, so
-        browsers keep it out of HTTP requests and server logs.
-      </p>
+      <header class="panel__header">
+        <span class="panel__step">§01 / SEAL</span>
+        <h2 id="create-title" class="panel__title"><span class="panel__title-glyph">»</span>Compose &amp; Seal</h2>
+      </header>
+      <div class="panel__body">
+        <p class="lede">
+          Type the payload below. The browser <em>seals it locally</em> with a key that
+          never reaches the server. Anyone with the full URL can decrypt it exactly
+          once — after that the ciphertext is destroyed.
+        </p>
 
-      <form id="create-form" class="secret-form">
-        <label for="secret">Secret text</label>
-        <textarea id="secret" name="secret" maxlength="65536" spellcheck="false" placeholder="Troy and Abed hid the spare key in the Dreamatorium." required></textarea>
-        <div class="form-footer">
-          <span id="char-count">0 bytes</span>
-          <button class="button primary" type="submit">Generate one-time URL</button>
-        </div>
-      </form>
+        <form id="create-form" class="secret-form" novalidate>
+          <label for="secret">Payload</label>
+          <textarea
+            id="secret"
+            name="secret"
+            maxlength="65536"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+            placeholder="Troy and Abed hid the spare key in the Dreamatorium."
+            required></textarea>
+          <div class="form-footer">
+            <span id="char-count">0 / 0</span>
+            <button class="button primary" type="submit">Generate dead-drop URL</button>
+          </div>
+        </form>
 
-      <div class="result-card" id="result" hidden>
-        <label for="share-url">Share this URL</label>
-        <div class="copy-row">
-          <input id="share-url" readonly>
-          <button class="button ghost" id="copy-link" type="button">Copy</button>
+        <div class="result-card" id="result" hidden>
+          <div class="result-card__header">
+            <span>Transmission ready</span>
+            <span class="result-card__stamp">RECEIVED</span>
+          </div>
+          <div class="result-card__body">
+            <label for="share-url">Share URL</label>
+            <div class="copy-row">
+              <input id="share-url" readonly autocomplete="off" spellcheck="false">
+              <button class="button" id="copy-link" type="button">Copy</button>
+            </div>
+            <p class="expiry" id="expiry-line" hidden></p>
+            <p class="warning">Single use — anyone with this URL can read the note once.</p>
+          </div>
         </div>
-        <p class="warning">Anyone with this full URL can reveal the secret once.</p>
       </div>
     </section>
 
     <section class="panel reveal-panel" id="reveal-view" aria-labelledby="reveal-title" hidden>
-      <div class="panel-mark">∞</div>
-      <h2 id="reveal-title">A sealed note is waiting</h2>
-      <p class="muted">
-        Press reveal only when you are ready. The server deletes the encrypted
-        payload before handing it to this browser. Very spy movie, fewer hats.
-      </p>
-      <button class="button primary wide" id="reveal-button" type="button">Reveal and burn</button>
-      <pre class="secret-output" id="secret-output" hidden></pre>
-      <button class="button ghost" id="copy-secret" type="button" hidden>Copy revealed text</button>
+      <header class="panel__header">
+        <span class="panel__step">§01 / DECRYPT</span>
+        <h2 id="reveal-title" class="panel__title"><span class="panel__title-glyph">»</span>Sealed Transmission</h2>
+      </header>
+      <div class="panel__body">
+        <p class="lede">
+          The server holds an <em>encrypted blob</em> for this file. Press reveal
+          and the server destroys its copy <em>before</em> handing the ciphertext
+          back to this browser to be decoded with the key in your URL.
+        </p>
+        <button class="button primary wide" id="reveal-button" type="button">Reveal &amp; burn</button>
+        <pre class="secret-output" id="secret-output" hidden aria-label="Revealed payload"></pre>
+        <button class="button" id="copy-secret" type="button" hidden>Copy decrypted text</button>
+      </div>
     </section>
-
-    <aside class="status" id="status" role="status" aria-live="polite"></aside>
   </main>
+
+  <footer class="footer-bar" role="contentinfo">
+    <span>End of document</span>
+    <span>Unauthorized access prohibited</span>
+  </footer>
+
+  <aside class="status" id="status" role="status" aria-live="polite"></aside>
 
   <script src="/assets/app.js" defer></script>
 </body>

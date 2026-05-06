@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
@@ -31,7 +32,7 @@ const (
 )
 
 var (
-	//go:embed static/index.html static/assets/*
+	//go:embed static/index.html static/assets
 	staticFiles embed.FS
 
 	errSecretExists       = errors.New("secret id already exists")
@@ -398,6 +399,7 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 	if err != nil {
 		return nil, fmt.Errorf("read embedded index: %w", err)
 	}
+	index = bytes.ReplaceAll(index, []byte("__PAPER_MAX_BYTES__"), []byte(strconv.Itoa(maxSecretBytes)))
 
 	assets, err := fs.Sub(staticFiles, "static/assets")
 	if err != nil {
