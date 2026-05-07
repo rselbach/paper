@@ -32,3 +32,6 @@ race:
 
 clean:
     rm -rf bin
+
+install:
+    ./deploy/install.sh
