@@ -611,7 +611,7 @@ input:focus::placeholder {
   font-weight: 700;
   letter-spacing: 0.2em;
   z-index: 1;
-  border: red 1px solid;
+  border: 1px solid var(--accent);
 }
 
 .secret-output {

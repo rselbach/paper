@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -108,7 +110,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	store, err := openStore(ctx, cfg.dbPath)
 	if err != nil {
 		logger.Error("open store", "error", err)
@@ -141,10 +145,29 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("listening", "addr", cfg.addr, "db", cfg.dbPath, "publicOrigin", cfg.publicOrigin, "cleanupInterval", cfg.cleanupInterval, "version", version)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("serve http", "error", err)
-		os.Exit(1)
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("listening", "addr", cfg.addr, "db", cfg.dbPath, "publicOrigin", cfg.publicOrigin, "cleanupInterval", cfg.cleanupInterval, "version", version)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			logger.Error("serve http", "error", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		logger.Info("shutting down", "cause", context.Cause(ctx))
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown http", "error", err)
+		}
 	}
 }
 
@@ -250,37 +273,112 @@ func openStore(ctx context.Context, path string) (*store, error) {
 
 func (s *store) configure(ctx context.Context) error {
 	s.db.SetMaxOpenConns(1)
-	statements := []string{
+	pragmas := []string{
 		"PRAGMA busy_timeout = 5000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA secure_delete = ON",
 		"PRAGMA journal_mode = WAL",
-		`CREATE TABLE IF NOT EXISTS secrets (
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("exec sqlite statement %q: %w", pragma, err)
+		}
+	}
+	return s.migrate(ctx)
+}
+
+func (s *store) migrate(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER PRIMARY KEY
+	) STRICT`); err != nil {
+		return fmt.Errorf("create schema_version: %w", err)
+	}
+
+	var current int
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&current); err != nil {
+		return fmt.Errorf("read schema_version: %w", err)
+	}
+
+	if current < 1 {
+		if err := s.applyMigrationV1(ctx); err != nil {
+			return fmt.Errorf("apply migration v1: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (1)"); err != nil {
+			return fmt.Errorf("record schema_version 1: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *store) applyMigrationV1(ctx context.Context) error {
+	exists, err := s.tableExists(ctx, "secrets")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := s.db.ExecContext(ctx, `CREATE TABLE secrets (
 			id TEXT PRIMARY KEY,
 			ciphertext BLOB NOT NULL,
 			nonce BLOB NOT NULL,
 			consume_verifier BLOB,
 			created_at_unix INTEGER NOT NULL,
 			expires_at_unix INTEGER NOT NULL
-		) STRICT`,
-		"ALTER TABLE secrets ADD COLUMN consume_verifier BLOB",
-		"CREATE INDEX IF NOT EXISTS secrets_expires_at_idx ON secrets(expires_at_unix)",
-	}
-
-	for _, statement := range statements {
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			if statement == "ALTER TABLE secrets ADD COLUMN consume_verifier BLOB" && isDuplicateColumnError(err) {
-				continue
+		) STRICT`); err != nil {
+			return fmt.Errorf("create secrets: %w", err)
+		}
+	} else {
+		hasVerifier, err := s.columnExists(ctx, "secrets", "consume_verifier")
+		if err != nil {
+			return err
+		}
+		if !hasVerifier {
+			if _, err := s.db.ExecContext(ctx, "ALTER TABLE secrets ADD COLUMN consume_verifier BLOB"); err != nil {
+				return fmt.Errorf("add consume_verifier column: %w", err)
 			}
-			return fmt.Errorf("exec sqlite statement %q: %w", statement, err)
 		}
 	}
-
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS secrets_expires_at_idx ON secrets(expires_at_unix)"); err != nil {
+		return fmt.Errorf("create expires_at index: %w", err)
+	}
 	return nil
 }
 
-func isDuplicateColumnError(err error) bool {
-	return strings.Contains(err.Error(), "duplicate column name")
+func (s *store) tableExists(ctx context.Context, name string) (bool, error) {
+	var got string
+	err := s.db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query sqlite_master for %q: %w", name, err)
+	}
+	return true, nil
+}
+
+func (s *store) columnExists(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%q)", table))
+	if err != nil {
+		return false, fmt.Errorf("read table info for %q: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("scan table info for %q: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table info for %q: %w", table, err)
+	}
+	return false, nil
 }
 
 func (s *store) Close() error {
@@ -493,7 +591,8 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, err.Error(), s.logger)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("store secret: %v", err), s.logger)
+		s.logger.Error("store secret", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error", s.logger)
 		return
 	}
 
@@ -582,7 +681,8 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errSecretUnauthorized):
 			writeError(w, http.StatusForbidden, err.Error(), s.logger)
 		default:
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("consume secret: %v", err), s.logger)
+			s.logger.Error("consume secret", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error", s.logger)
 		}
 		return
 	}
@@ -595,7 +695,11 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+		} else {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), clipboard-write=(self)")
