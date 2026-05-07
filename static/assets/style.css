@@ -686,6 +686,23 @@ input:focus::placeholder {
   box-shadow: 4px 4px 0 0 var(--ink);
 }
 
+/* ------ Version tag ------ */
+.version-tag {
+  position: fixed;
+  left: max(0.85rem, env(safe-area-inset-left));
+  bottom: max(0.65rem, env(safe-area-inset-bottom));
+  z-index: 4;
+  max-width: min(26rem, calc(100% - 1.7rem));
+  color: var(--ink-faint);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.3;
+  text-transform: uppercase;
+  word-break: break-all;
+  pointer-events: none;
+}
+
 /* ------ Footer ------ */
 .footer-bar {
   position: relative;

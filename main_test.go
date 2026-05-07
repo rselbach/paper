@@ -244,15 +244,24 @@ func TestCreateHandlerRejectsBadConsumeVerifier(t *testing.T) {
 	r.Contains(response.Body.String(), "consumeVerifier must be 32 bytes")
 }
 
-func TestIndexInjectsMaxBytesMeta(t *testing.T) {
+func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 	r := require.New(t)
+	originalVersion := version
+	version = "abc123"
+	t.Cleanup(func() {
+		version = originalVersion
+	})
+
 	store := newTestStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv, err := newServer(store, logger, "", time.Hour, 12345)
 	r.NoError(err)
 
 	r.Contains(string(srv.index), `<meta name="paper-max-bytes" content="12345">`)
+	r.Contains(string(srv.index), `<meta name="paper-version" content="abc123">`)
+	r.Contains(string(srv.index), `version abc123`)
 	r.NotContains(string(srv.index), "__PAPER_MAX_BYTES__")
+	r.NotContains(string(srv.index), "__PAPER_VERSION__")
 }
 
 func TestNormalizePublicOrigin(t *testing.T) {

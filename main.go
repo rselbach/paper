@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,8 @@ const (
 var (
 	//go:embed static/index.html static/assets
 	staticFiles embed.FS
+
+	version = "dev"
 
 	errSecretExists       = errors.New("secret id already exists")
 	errSecretUnavailable  = errors.New("secret is unavailable or already used")
@@ -138,7 +141,7 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	logger.Info("listening", "addr", cfg.addr, "db", cfg.dbPath, "publicOrigin", cfg.publicOrigin, "cleanupInterval", cfg.cleanupInterval)
+	logger.Info("listening", "addr", cfg.addr, "db", cfg.dbPath, "publicOrigin", cfg.publicOrigin, "cleanupInterval", cfg.cleanupInterval, "version", version)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("serve http", "error", err)
 		os.Exit(1)
@@ -400,6 +403,7 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 		return nil, fmt.Errorf("read embedded index: %w", err)
 	}
 	index = bytes.ReplaceAll(index, []byte("__PAPER_MAX_BYTES__"), []byte(strconv.Itoa(maxSecretBytes)))
+	index = bytes.ReplaceAll(index, []byte("__PAPER_VERSION__"), []byte(html.EscapeString(version)))
 
 	assets, err := fs.Sub(staticFiles, "static/assets")
 	if err != nil {

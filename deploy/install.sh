@@ -30,6 +30,16 @@ sudo_run() {
   fi
 }
 
+build_version() {
+  if command -v git >/dev/null 2>&1 \
+      && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      && [[ -z "$(git status --porcelain)" ]]; then
+    git rev-parse HEAD
+  else
+    printf 'dev\n'
+  fi
+}
+
 build() {
   local repo_root
   repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,8 +51,11 @@ build() {
   build_dir="$(mktemp -d)"
   BUILD_DIR="${build_dir}"
 
-  echo "Building ${BINARY_NAME} in ${repo_root}..."
-  if ! CGO_ENABLED=0 go build -o "${build_dir}/${BINARY_NAME}" .; then
+  local version
+  version="$(build_version)"
+
+  echo "Building ${BINARY_NAME} ${version} in ${repo_root}..."
+  if ! CGO_ENABLED=0 go build -ldflags "-X main.version=${version}" -o "${build_dir}/${BINARY_NAME}" .; then
     die "go build failed"
   fi
 }
