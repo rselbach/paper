@@ -22,10 +22,10 @@
   --paper-hot: #fff5dc;
   --ink: #0a0a0a;
   --ink-soft: #1a1612;
-  --ink-faint: rgba(10, 10, 10, 0.6);
+  --ink-faint: rgba(10, 10, 10, 0.75);
   --ink-line: rgba(10, 10, 10, 0.22);
   --ink-rule: rgba(10, 10, 10, 0.12);
-  --accent: #a3231e;
+  --accent: #d93025;
   --accent-deep: #6f1715;
   --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
@@ -594,21 +594,12 @@ input:focus::placeholder {
   color: var(--ink);
 }
 
-.secret-output {
+.secret-output-group {
   position: relative;
   margin: 1.1rem 0 0.9rem;
-  padding: 1rem 1.1rem;
-  border: 1px solid var(--ink);
-  background: var(--ink);
-  color: var(--paper-hot);
-  font: 0.94rem/1.55 var(--mono);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 26rem;
-  overflow: auto;
 }
 
-.secret-output::before {
+.secret-output-group::before {
   content: "DECRYPTED PAYLOAD »";
   position: absolute;
   top: -0.62rem;
@@ -619,6 +610,21 @@ input:focus::placeholder {
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.2em;
+  z-index: 1;
+  border: red 1px solid;
+}
+
+.secret-output {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper-hot);
+  font: 0.94rem/1.55 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 26rem;
+  overflow: auto;
 }
 
 .declassified-stamp {

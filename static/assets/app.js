@@ -17,6 +17,7 @@ const revealButton = document.querySelector("#reveal-button");
 const revealPanel = document.querySelector("#reveal-view");
 const revealPanelBody = revealPanel?.querySelector(".panel__body") ?? null;
 const secretOutput = document.querySelector("#secret-output");
+const secretOutputGroup = document.querySelector("#secret-output-group");
 const copySecret = document.querySelector("#copy-secret");
 const statusBox = document.querySelector("#status");
 const fileIdCell = document.querySelector("#file-id");
@@ -239,6 +240,10 @@ async function createSecret(event) {
     updateByteCount();
     setStatus("Sealed. Server received encrypted confetti only.", "ok");
     clearStatusSoon();
+
+    result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    shareURL.focus();
+    shareURL.select();
   } catch (error) {
     setStatus(`Could not create secret: ${error.message}`, "error");
   } finally {
@@ -292,7 +297,11 @@ async function revealSecret() {
     );
 
     secretOutput.textContent = decoder.decode(plaintext);
-    secretOutput.hidden = false;
+    if (secretOutputGroup) {
+      secretOutputGroup.hidden = false;
+    } else {
+      secretOutput.hidden = false;
+    }
     copySecret.hidden = false;
     revealButton.hidden = true;
     window.history.replaceState(null, "", window.location.pathname);
@@ -347,7 +356,7 @@ function boot() {
   if (window.location.hash.length === 0) {
     revealButton.disabled = true;
     revealButton.setAttribute("aria-disabled", "true");
-    setStatus("This link is missing its #decryption-key fragment. Revealing now would burn the note for nothing — get the full URL.", "error");
+    setStatus("Missing #decryption-key fragment. If you just read this note, it is already burned. Otherwise, you need the full URL.", "error");
     return;
   }
 

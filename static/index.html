@@ -79,8 +79,8 @@
           <div class="result-card__body">
             <label for="share-url">Share URL</label>
             <div class="copy-row">
-              <input id="share-url" readonly autocomplete="off" spellcheck="false">
-              <button class="button" id="copy-link" type="button">Copy</button>
+              <input id="share-url" readonly autocomplete="off" spellcheck="false" aria-label="Share URL">
+              <button class="button" id="copy-link" type="button" aria-label="Copy share URL">Copy</button>
             </div>
             <p class="expiry" id="expiry-line" hidden></p>
             <p class="warning">Single use — anyone with this URL can read the note once.</p>
@@ -100,9 +100,11 @@
           and the server destroys its copy <em>before</em> handing the ciphertext
           back to this browser to be decoded with the key in your URL.
         </p>
-        <button class="button primary wide" id="reveal-button" type="button">Reveal &amp; burn</button>
-        <pre class="secret-output" id="secret-output" hidden aria-label="Revealed payload"></pre>
-        <button class="button" id="copy-secret" type="button" hidden>Copy decrypted text</button>
+        <button class="button primary wide" id="reveal-button" type="button" aria-label="Reveal and burn secret">Reveal &amp; burn</button>
+        <div class="secret-output-group" id="secret-output-group" hidden>
+          <pre class="secret-output" id="secret-output" aria-label="Revealed payload"></pre>
+        </div>
+        <button class="button" id="copy-secret" type="button" hidden aria-label="Copy decrypted text">Copy decrypted text</button>
       </div>
     </section>
   </main>
