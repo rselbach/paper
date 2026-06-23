@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +156,79 @@ func TestCreateAndConsumeHandlers(t *testing.T) {
 	r.Equal(http.StatusGone, secondResponse.Code)
 }
 
+func TestHealthEndpoint(t *testing.T) {
+	r := require.New(t)
+	app := newTestServer(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+
+	r.Equal(http.StatusOK, response.Code)
+	r.Equal("text/plain; charset=utf-8", response.Header().Get("Content-Type"))
+	r.Equal("ok\n", response.Body.String())
+}
+
+func TestSecretPageValidatesID(t *testing.T) {
+	r := require.New(t)
+	app := newTestServer(t)
+
+	validRequest := httptest.NewRequest(http.MethodGet, "/s/aaaaaaaaaaaaaaaaaaaaaa", nil)
+	validResponse := httptest.NewRecorder()
+	app.ServeHTTP(validResponse, validRequest)
+	r.Equal(http.StatusOK, validResponse.Code)
+	r.Contains(validResponse.Body.String(), `<section class="panel reveal-panel" id="reveal-view"`)
+
+	invalidRequest := httptest.NewRequest(http.MethodGet, "/s/not-valid!", nil)
+	invalidResponse := httptest.NewRecorder()
+	app.ServeHTTP(invalidResponse, invalidRequest)
+	r.Equal(http.StatusNotFound, invalidResponse.Code)
+}
+
+func TestSecurityHeadersAndAssetCaching(t *testing.T) {
+	r := require.New(t)
+	app := newTestServer(t)
+
+	indexRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	indexResponse := httptest.NewRecorder()
+	app.ServeHTTP(indexResponse, indexRequest)
+	r.Equal(http.StatusOK, indexResponse.Code)
+	r.Equal("no-store", indexResponse.Header().Get("Cache-Control"))
+	r.Equal("no-referrer", indexResponse.Header().Get("Referrer-Policy"))
+	r.Equal("nosniff", indexResponse.Header().Get("X-Content-Type-Options"))
+	r.Equal("same-origin", indexResponse.Header().Get("Cross-Origin-Opener-Policy"))
+	r.Contains(indexResponse.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'")
+
+	assetRequest := httptest.NewRequest(http.MethodGet, "/assets/style.css", nil)
+	assetResponse := httptest.NewRecorder()
+	app.ServeHTTP(assetResponse, assetRequest)
+	r.Equal(http.StatusOK, assetResponse.Code)
+	r.Equal("public, max-age=3600", assetResponse.Header().Get("Cache-Control"))
+	r.Contains(assetResponse.Body.String(), ":root")
+}
+
+func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
+	r := require.New(t)
+	app := newTestServer(t)
+
+	id := "mmmmmmmmmmmmmmmmmmmmmm"
+	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted first payload"))
+	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{11}, 32))
+	body := `{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`
+
+	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
+	firstResponse := httptest.NewRecorder()
+	app.ServeHTTP(firstResponse, firstRequest)
+	r.Equal(http.StatusCreated, firstResponse.Code)
+
+	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
+	secondResponse := httptest.NewRecorder()
+	app.ServeHTTP(secondResponse, secondRequest)
+	r.Equal(http.StatusConflict, secondResponse.Code)
+	r.Contains(secondResponse.Body.String(), "secret id already exists")
+}
+
 func TestCreateHandlerUsesConfiguredPublicOrigin(t *testing.T) {
 	r := require.New(t)
 	app := newTestServerWithOrigin(t, "https://paper.example")
@@ -244,6 +319,36 @@ func TestCreateHandlerRejectsBadConsumeVerifier(t *testing.T) {
 	r.Contains(response.Body.String(), "consumeVerifier must be 32 bytes")
 }
 
+func TestCreateHandlerRejectsUnknownField(t *testing.T) {
+	r := require.New(t)
+	app := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"id":"nnnnnnnnnnnnnnnnnnnnnn","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{12}, 32)) + `","extra":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+
+	r.Equal(http.StatusBadRequest, response.Code)
+	r.Contains(response.Body.String(), "unknown field")
+}
+
+func TestCreateHandlerRejectsOversizedCiphertext(t *testing.T) {
+	r := require.New(t)
+	store := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, 3)
+	r.NoError(err)
+	app := server.routes()
+
+	body := bytes.NewBufferString(`{"id":"oooooooooooooooooooooo","ciphertext":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte("x"), 36)) + `","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{13}, 32)) + `"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+
+	r.Equal(http.StatusBadRequest, response.Code)
+	r.Contains(response.Body.String(), "ciphertext exceeds 35 bytes")
+}
+
 func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 	r := require.New(t)
 	originalVersion := version
@@ -297,6 +402,108 @@ func TestLoadConfigParsesCleanupInterval(t *testing.T) {
 	cfg, err := loadConfig()
 	r.NoError(err)
 	r.Equal(15*time.Minute, cfg.cleanupInterval)
+}
+
+func TestLoadConfigParsesTTLAndMaxBytes(t *testing.T) {
+	r := require.New(t)
+	t.Setenv("PAPER_ADDR", "")
+	t.Setenv("PAPER_DB", "")
+	t.Setenv("PAPER_PUBLIC_ORIGIN", "")
+	t.Setenv("PAPER_SECRET_TTL_HOURS", "12")
+	t.Setenv("PAPER_MAX_SECRET_BYTES", "2048")
+	t.Setenv("PAPER_CLEANUP_INTERVAL_MINUTES", "")
+
+	cfg, err := loadConfig()
+	r.NoError(err)
+	r.Equal(12*time.Hour, cfg.secretTTL)
+	r.Equal(2048, cfg.maxSecretBytes)
+}
+
+func TestLoadConfigRejectsNonPositiveNumericValues(t *testing.T) {
+	t.Run("ttl", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_SECRET_TTL_HOURS", "0")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_SECRET_TTL_HOURS must be positive")
+	})
+
+	t.Run("cleanup interval", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_CLEANUP_INTERVAL_MINUTES", "-1")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_CLEANUP_INTERVAL_MINUTES must be positive")
+	})
+
+	t.Run("max bytes", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_MAX_SECRET_BYTES", "0")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_MAX_SECRET_BYTES must be positive")
+	})
+}
+
+func TestDeploymentArtifactsMatchExpectedServiceBehavior(t *testing.T) {
+	r := require.New(t)
+
+	serviceBytes, err := os.ReadFile(filepath.Join("deploy", "paper.service"))
+	r.NoError(err)
+	service := string(serviceBytes)
+	for _, expected := range []string{
+		"[Unit]",
+		"Description=Paper one-time secret sharing service",
+		"After=network-online.target",
+		"Wants=network-online.target",
+		"[Service]",
+		"Type=simple",
+		"User=paper",
+		"Group=paper",
+		"WorkingDirectory=/var/lib/paper",
+		"ExecStart=/usr/local/bin/paper",
+		"Restart=on-failure",
+		"Environment=PAPER_ADDR=127.0.0.1:8080",
+		"Environment=PAPER_DB=/var/lib/paper/paper.db",
+		"Environment=PAPER_SECRET_TTL_HOURS=168",
+		"Environment=PAPER_CLEANUP_INTERVAL_MINUTES=60",
+		"Environment=PAPER_MAX_SECRET_BYTES=65536",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectHome=true",
+		"ProtectSystem=strict",
+		"ReadWritePaths=/var/lib/paper",
+		"[Install]",
+		"WantedBy=multi-user.target",
+	} {
+		r.Contains(service, expected)
+	}
+
+	installPath := filepath.Join("deploy", "install.sh")
+	installInfo, err := os.Stat(installPath)
+	r.NoError(err)
+	r.NotZero(installInfo.Mode() & 0o111)
+
+	installBytes, err := os.ReadFile(installPath)
+	r.NoError(err)
+	installScript := string(installBytes)
+	for _, expected := range []string{
+		"set -euo pipefail",
+		`readonly SERVICE_NAME="paper"`,
+		`readonly BINARY_NAME="paper"`,
+		`readonly INSTALL_PATH="${INSTALL_DIR}/${BINARY_NAME}"`,
+		"CGO_ENABLED=0 go build",
+		`sudo_run install -m 0755 "${BUILD_DIR}/${BINARY_NAME}" "${INSTALL_PATH}"`,
+		`sudo_run systemctl start "${SERVICE_NAME}.service"`,
+		`sudo_run systemctl is-active --quiet "${SERVICE_NAME}.service"`,
+		"trap cleanup EXIT",
+	} {
+		r.Contains(installScript, expected)
+	}
+	r.True(strings.HasPrefix(installScript, "#!/usr/bin/env bash\n"))
 }
 
 func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {

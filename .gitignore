@@ -13,6 +13,11 @@ CLAUDE.md
 *.out
 coverage.out
 
+# Node/browser test dependencies and outputs
+node_modules/
+test-results/
+playwright-report/
+
 # Local environment
 .env
 .env.*

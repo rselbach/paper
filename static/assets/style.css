@@ -50,6 +50,7 @@
 
 html {
   min-height: 100%;
+  overflow-x: clip;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--mono);
@@ -61,6 +62,7 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
+  overflow-x: clip;
   font-size: 15px;
   line-height: 1.55;
   background:
@@ -95,6 +97,7 @@ a {
   z-index: 0;
   overflow: hidden;
   user-select: none;
+  contain: paint;
 }
 
 .watermark span {
@@ -772,6 +775,11 @@ input:focus::placeholder {
     grid-template-columns: 1fr 1fr;
   }
 
+  .watermark span {
+    max-width: 86vw;
+    overflow: hidden;
+  }
+
   .dossier > div {
     padding: 0.4rem 0.7rem;
     border-right: 1px solid var(--ink-line);
@@ -837,6 +845,16 @@ input:focus::placeholder {
   .copy-row input {
     border-right: 1px solid var(--ink);
     border-bottom: 0;
+  }
+
+  .result-card__header {
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .result-card__stamp {
+    margin-left: auto;
+    letter-spacing: 0.18em;
   }
 
   .form-footer {
