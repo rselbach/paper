@@ -438,12 +438,20 @@ func (s *store) tableExists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-func (s *store) columnExists(ctx context.Context, table, column string) (bool, error) {
+func (s *store) columnExists(ctx context.Context, table, column string) (exists bool, returnErr error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%q)", table))
 	if err != nil {
 		return false, fmt.Errorf("read table info for %q: %w", table, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			if returnErr != nil {
+				returnErr = fmt.Errorf("%w; close table info for %q: %v", returnErr, table, err)
+				return
+			}
+			returnErr = fmt.Errorf("close table info for %q: %w", table, err)
+		}
+	}()
 
 	for rows.Next() {
 		var cid int
