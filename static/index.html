@@ -51,8 +51,9 @@
       <div class="panel__body">
         <p class="lede">
           Type the payload below. The browser <em>seals it locally</em> with a key that
-          never reaches the server. Anyone with the full URL can decrypt it exactly
-          once — after that the ciphertext is destroyed.
+          never reaches the server. Anyone with the full URL gets one reveal attempt.
+          The server burns the ciphertext before delivery, so a failed attempt cannot
+          be retried.
         </p>
 
         <form id="create-form" class="secret-form" novalidate>
@@ -84,7 +85,7 @@
               <button class="button" id="copy-link" type="button" aria-label="Copy share URL">Copy</button>
             </div>
             <p class="expiry" id="expiry-line" hidden></p>
-            <p class="warning">Single use — anyone with this URL can read the note once.</p>
+            <p class="warning">Single attempt — network failure can burn an unread note.</p>
           </div>
         </div>
       </div>
@@ -99,7 +100,8 @@
         <p class="lede">
           The server holds an <em>encrypted blob</em> for this file. Press reveal
           and the server destroys its copy <em>before</em> handing the ciphertext
-          back to this browser to be decoded with the key in your URL.
+          back to this browser to be decoded with the key in your URL. If delivery
+          or decryption fails after that, the note cannot be recovered.
         </p>
         <button class="button primary wide" id="reveal-button" type="button" aria-label="Reveal and burn secret">Reveal &amp; burn</button>
         <div class="secret-output-group" id="secret-output-group" hidden>

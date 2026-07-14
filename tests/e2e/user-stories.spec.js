@@ -2,7 +2,7 @@ const { test, expect } = require("@playwright/test");
 
 const baseURL = process.env.PAPER_E2E_BASE_URL || "http://127.0.0.1:18081";
 
-test("sender creates a sealed note and recipient reveals it exactly once", async ({ page, context }) => {
+test("sender creates a sealed note that cannot be revealed twice", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: baseURL });
   await page.goto(baseURL);
 

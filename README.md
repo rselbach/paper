@@ -35,7 +35,8 @@ go run .
 - SQLite stores only the random note id, ciphertext, nonce, consume proof, and
   expiry time.
 - Revealing a note uses a `POST` action and deletes the encrypted payload before
-  returning it to the browser.
+  returning it to the browser. This provides at-most-once access: a network or
+  decryption failure after deletion burns the note without revealing it.
 - Expired notes are deleted at startup, opportunistically on reveal, and by a
   periodic cleanup ticker.
 - Creation is rate limited, and stored ciphertext is bounded by byte and item
