@@ -469,7 +469,7 @@ func (s *store) Close() error {
 }
 
 func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce []byte, consumeVerifier []byte, now time.Time, ttl time.Duration) (time.Time, error) {
-	expiresAt := now.UTC().Add(ttl)
+	expiresAt := now.UTC().Add(ttl).Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("begin create transaction: %w", err)

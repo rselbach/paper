@@ -44,6 +44,29 @@ func TestStoreConsumeDeletesSecret(t *testing.T) {
 	r.ErrorIs(err, errSecretUnavailable)
 }
 
+func TestStoreAdvertisesEnforcedExpiryPrecision(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	store := newTestStore(t)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 900_000_000, time.UTC)
+	consumeVerifier := bytes.Repeat([]byte{1}, 32)
+
+	expiresAt, err := store.Create(
+		ctx,
+		"subsecondexpirynote000",
+		[]byte("encrypted Troy and Abed"),
+		[]byte("123456789012"),
+		consumeVerifier,
+		now,
+		time.Hour,
+	)
+	r.NoError(err)
+	r.Equal(now.Add(time.Hour).Truncate(time.Second), expiresAt)
+
+	_, err = store.Consume(ctx, "subsecondexpirynote000", consumeVerifier, expiresAt.Add(-time.Nanosecond))
+	r.NoError(err)
+}
+
 func TestStoreConsumeRemovesCiphertextFromDatabaseFiles(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()
