@@ -510,6 +510,10 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "paper-legacy.db")
+	legacyID := "legacygreendalenote000"
+	ciphertext := []byte("encrypted Greendale bylaws")
+	nonce := []byte("123456789012")
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
 	db, err := sql.Open("sqlite", path)
 	r.NoError(err)
@@ -521,6 +525,16 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 		expires_at_unix INTEGER NOT NULL
 	) STRICT`)
 	r.NoError(err)
+	_, err = db.ExecContext(
+		ctx,
+		"INSERT INTO secrets (id, ciphertext, nonce, created_at_unix, expires_at_unix) VALUES (?, ?, ?, ?, ?)",
+		legacyID,
+		ciphertext,
+		nonce,
+		now.Unix(),
+		now.Add(time.Hour).Unix(),
+	)
+	r.NoError(err)
 	r.NoError(db.Close())
 
 	store, err := openStore(ctx, path)
@@ -531,9 +545,6 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 
 	rows, err := store.db.QueryContext(ctx, "PRAGMA table_info(secrets)")
 	r.NoError(err)
-	defer func() {
-		r.NoError(rows.Close())
-	}()
 
 	hasConsumeVerifier := false
 	for rows.Next() {
@@ -550,6 +561,12 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 	}
 	r.NoError(rows.Err())
 	r.True(hasConsumeVerifier)
+	r.NoError(rows.Close())
+
+	secret, err := store.Consume(ctx, legacyID, bytes.Repeat([]byte{1}, 32), now)
+	r.NoError(err)
+	r.Equal(ciphertext, secret.Ciphertext)
+	r.Equal(nonce, secret.Nonce)
 }
 
 func newTestStore(t *testing.T) *store {

@@ -444,7 +444,8 @@ func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, 
 		return nil, errSecretExpired
 	}
 
-	if len(secret.ConsumeVerifier) != 32 || subtle.ConstantTimeCompare(secret.ConsumeVerifier, consumeVerifier) != 1 {
+	// Secrets created before consume proofs were introduced have no verifier.
+	if len(secret.ConsumeVerifier) != 0 && (len(secret.ConsumeVerifier) != 32 || subtle.ConstantTimeCompare(secret.ConsumeVerifier, consumeVerifier) != 1) {
 		return nil, rollbackWithError(tx, errSecretUnauthorized)
 	}
 
