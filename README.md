@@ -47,3 +47,22 @@ go run .
   hardening defaults.
 
 Use HTTPS in production; Web Crypto works on HTTPS and localhost.
+
+## Deploy
+
+Check the existing server without changing it:
+
+```sh
+./deploy/deploy-server.sh check
+```
+
+Deploy a clean commit to `ssh.rselbach.com`:
+
+```sh
+./deploy/deploy-server.sh deploy
+```
+
+The script runs the checks, cross-compiles for Linux/amd64, verifies the
+upload checksum, backs up the current binary and database, installs the new
+binary, and verifies both the local service and public endpoint. It rolls back
+the binary automatically if the restarted local service is unhealthy.

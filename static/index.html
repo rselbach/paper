@@ -5,59 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="paper-max-bytes" content="__PAPER_MAX_BYTES__">
   <meta name="paper-version" content="__PAPER_VERSION__">
-  <title>Paper — one-view dead drop</title>
+  <title>Paper — one-view private notes</title>
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
-  <div class="watermark" aria-hidden="true"><span>BURN AFTER READING</span></div>
-
-  <header class="classified-bar" role="banner">
-    <div class="classified-bar__inner">
-      <span class="classified-bar__brand">
-        <strong>PAPER</strong>
-        <span>// ONE-VIEW DEAD DROP // v1</span>
-      </span>
-      <span class="classified-bar__stamp" id="classification-stamp">TOP SECRET</span>
-    </div>
+  <header class="app-header" role="banner">
+    <a class="brand" href="/" aria-label="Paper home">Paper</a>
+    <nav class="header-links" aria-label="Page information">
+      <a class="how-link" href="#privacy-note">How it works</a>
+      <a href="#security-details">Security</a>
+    </nav>
   </header>
 
-  <dl class="dossier" aria-label="Document metadata">
-    <div>
-      <dt>File no.</dt>
-      <dd id="file-id">—</dd>
-    </div>
-    <div>
-      <dt>Cipher</dt>
-      <dd>AES-GCM-256</dd>
-    </div>
-    <div>
-      <dt>Key delivery</dt>
-      <dd>URL fragment</dd>
-    </div>
-    <div>
-      <dt>Expires</dt>
-      <dd id="dossier-expiry">PENDING</dd>
-    </div>
-  </dl>
+  <main class="app-shell">
+    <h1 class="visually-hidden">Paper — one-view encrypted notes</h1>
 
-  <main class="document">
-    <h1 class="visually-hidden">Paper — one-view encrypted note transmitter</h1>
-
-    <section class="panel" id="create-view" aria-labelledby="create-title" hidden>
-      <header class="panel__header">
-        <span class="panel__step">§01 / SEAL</span>
-        <h2 id="create-title" class="panel__title"><span class="panel__title-glyph">»</span>Compose &amp; Seal</h2>
-      </header>
-      <div class="panel__body">
-        <p class="lede">
-          Type the payload below. The browser <em>seals it locally</em> with a key that
-          never reaches the server. Anyone with the full URL gets one reveal attempt.
-          The server burns the ciphertext before delivery, so a failed attempt cannot
-          be retried.
-        </p>
+    <section class="create-view" id="create-view" aria-labelledby="create-title" hidden>
+      <div class="compose-column task-panel">
+        <header class="task-heading">
+          <p class="route-label">New one-time secret</p>
+          <h2 id="create-title">Create a secret link</h2>
+          <p>Paste a secret below. It is encrypted in this browser, and the link works exactly once.</p>
+        </header>
 
         <form id="create-form" class="secret-form" novalidate>
-          <label for="secret">Payload</label>
+          <div class="field-heading">
+            <label for="secret">Secret</label>
+            <span id="char-count">0 / 0</span>
+          </div>
           <textarea
             id="secret"
             name="secret"
@@ -65,60 +40,127 @@
             spellcheck="false"
             autocomplete="off"
             autocapitalize="off"
-            placeholder="Troy and Abed hid the spare key in the Dreamatorium."
+            placeholder="Paste a password, token, or note…"
             required></textarea>
-          <div class="form-footer">
-            <span id="char-count">0 / 0</span>
-            <button class="button primary" type="submit">Generate dead-drop URL</button>
+          <div class="form-actions">
+            <button class="button primary" type="submit">Create link</button>
+            <span>Expires after 7 days if unopened</span>
           </div>
         </form>
+      </div>
 
-        <div class="result-card" id="result" hidden>
-          <div class="result-card__header">
-            <span>Transmission ready</span>
-            <span class="result-card__stamp">RECEIVED</span>
-          </div>
-          <div class="result-card__body">
-            <label for="share-url">Share URL</label>
-            <div class="copy-row">
-              <input id="share-url" readonly autocomplete="off" spellcheck="false" aria-label="Share URL">
-              <button class="button" id="copy-link" type="button" aria-label="Copy share URL">Copy</button>
-            </div>
-            <p class="expiry" id="expiry-line" hidden></p>
-            <p class="warning">Single attempt — network failure can burn an unread note.</p>
+      <section class="result-card task-panel" id="result" aria-labelledby="result-title" hidden>
+        <header class="task-heading">
+          <p class="route-label status-ok">Created</p>
+          <h2 id="result-title">Link ready</h2>
+          <p>Send the complete link to the recipient. It will stop working after one open.</p>
+        </header>
+
+        <div class="result-field">
+          <label for="share-url">One-time link</label>
+          <div class="copy-row">
+            <input id="share-url" readonly autocomplete="off" spellcheck="false" aria-label="One-time link">
+            <button class="button copy-button" id="copy-link" type="button" aria-label="Copy one-time link">Copy</button>
           </div>
         </div>
-      </div>
+
+        <dl class="link-details">
+          <div>
+            <dt>Status</dt>
+            <dd id="classification-stamp" data-note-status>Local only</dd>
+          </div>
+          <div>
+            <dt>Expires</dt>
+            <dd id="dossier-expiry" data-expiry>Pending</dd>
+          </div>
+          <div>
+            <dt>Note</dt>
+            <dd id="file-id" data-file-id>—</dd>
+          </div>
+        </dl>
+
+        <p class="expiry" id="expiry-line" hidden></p>
+        <p class="warning">If delivery fails while opening, the secret may still be destroyed.</p>
+        <a class="button secondary" href="/">Create another</a>
+      </section>
+
+      <aside class="context-panel" id="privacy-note" aria-label="How Paper handles secrets">
+        <div class="context-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Encryption available</span>
+        </div>
+        <h2>What happens</h2>
+        <ol class="privacy-steps">
+          <li><strong>Encrypt locally</strong><span>The plaintext stays in this browser.</span></li>
+          <li><strong>Store ciphertext</strong><span>The server never receives the key.</span></li>
+          <li><strong>Delete on open</strong><span>The encrypted copy is consumed once.</span></li>
+        </ol>
+        <details id="security-details">
+          <summary>Technical details</summary>
+          <p>AES-GCM-256. The key is stored after <code>#</code> in the URL and is not sent in HTTP requests.</p>
+        </details>
+      </aside>
     </section>
 
-    <section class="panel reveal-panel" id="reveal-view" aria-labelledby="reveal-title" hidden>
-      <header class="panel__header">
-        <span class="panel__step">§01 / DECRYPT</span>
-        <h2 id="reveal-title" class="panel__title"><span class="panel__title-glyph">»</span>Sealed Transmission</h2>
-      </header>
-      <div class="panel__body">
-        <p class="lede">
-          The server holds an <em>encrypted blob</em> for this file. Press reveal
-          and the server destroys its copy <em>before</em> handing the ciphertext
-          back to this browser to be decoded with the key in your URL. If delivery
-          or decryption fails after that, the note cannot be recovered.
-        </p>
-        <button class="button primary wide" id="reveal-button" type="button" aria-label="Reveal and burn secret">Reveal &amp; burn</button>
+    <section class="reveal-view" id="reveal-view" aria-labelledby="reveal-title" hidden>
+      <div class="reveal-content task-panel">
+        <header class="task-heading">
+          <p class="route-label status-warning">One-time access</p>
+          <h2 id="reveal-title">Open secret?</h2>
+          <p id="reveal-lede">Opening permanently deletes the encrypted server copy before it is decrypted here.</p>
+        </header>
+
+        <dl class="reveal-details">
+          <div>
+            <dt>Note</dt>
+            <dd id="file-id-reveal" data-file-id>Shown in link</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd id="classification-stamp-reveal" data-note-status>Unopened</dd>
+          </div>
+          <div>
+            <dt>Expires</dt>
+            <dd id="dossier-expiry-reveal" data-expiry>On open</dd>
+          </div>
+        </dl>
+
+        <button class="button primary destructive" id="reveal-button" type="button" aria-label="Open and delete secret">Open and delete</button>
+        <p class="action-note">This action cannot be retried if delivery fails.</p>
+
         <div class="secret-output-group" id="secret-output-group" hidden>
-          <pre class="secret-output" id="secret-output" aria-label="Revealed payload"></pre>
+          <p class="output-label">Private note</p>
+          <pre class="secret-output" id="secret-output" aria-label="Revealed secret"></pre>
         </div>
-        <button class="button" id="copy-secret" type="button" hidden aria-label="Copy decrypted text">Copy decrypted text</button>
+        <button class="button secondary" id="copy-secret" type="button" hidden aria-label="Copy decrypted text">Copy note</button>
       </div>
+
+      <aside class="context-panel" id="reveal-privacy-note" aria-label="Single-use note information">
+        <div class="context-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="sealed-kicker">Encryption available</span>
+        </div>
+        <h2 id="sealed-title">What opening does</h2>
+        <p id="sealed-description">Paper cannot recover this note after it is opened.</p>
+        <ol class="privacy-steps">
+          <li><strong>Delete first</strong><span>The server removes its encrypted copy.</span></li>
+          <li><strong>Decrypt locally</strong><span>This browser uses the key from the link.</span></li>
+          <li><strong>No retry</strong><span>A failed delivery can still consume the note.</span></li>
+        </ol>
+        <details>
+          <summary>Technical details</summary>
+          <p>The decryption key is in the URL fragment and never reaches the server.</p>
+        </details>
+      </aside>
     </section>
   </main>
 
-  <footer class="footer-bar" role="contentinfo">
-    <span>End of document</span>
-    <span>Unauthorized access prohibited</span>
+  <footer class="app-footer" role="contentinfo">
+    <span class="version-tag">Paper __PAPER_VERSION__</span>
+    <span>No account · no history</span>
   </footer>
 
   <aside class="status" id="status" role="status" aria-live="polite"></aside>
-  <aside class="version-tag" aria-label="Running version">version __PAPER_VERSION__</aside>
 
   <script src="/assets/app.js" defer></script>
 </body>

@@ -299,7 +299,7 @@ func TestSecretPageValidatesID(t *testing.T) {
 	validResponse := httptest.NewRecorder()
 	app.ServeHTTP(validResponse, validRequest)
 	r.Equal(http.StatusOK, validResponse.Code)
-	r.Contains(validResponse.Body.String(), `<section class="panel reveal-panel" id="reveal-view"`)
+	r.Contains(validResponse.Body.String(), `<section class="reveal-view" id="reveal-view"`)
 
 	invalidRequest := httptest.NewRequest(http.MethodGet, "/s/not-valid!", nil)
 	invalidResponse := httptest.NewRecorder()
@@ -526,9 +526,9 @@ func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 
 	r.Contains(string(srv.index), `<meta name="paper-max-bytes" content="12345">`)
 	r.Contains(string(srv.index), `<meta name="paper-version" content="abc123">`)
-	r.Contains(string(srv.index), `version abc123`)
-	r.Contains(string(srv.index), "one reveal attempt")
-	r.Contains(string(srv.index), "network failure can burn an unread note")
+	r.Contains(string(srv.index), `Paper abc123`)
+	r.Contains(string(srv.index), "works exactly once")
+	r.Contains(string(srv.index), "secret may still be destroyed")
 	r.NotContains(string(srv.index), "__PAPER_MAX_BYTES__")
 	r.NotContains(string(srv.index), "__PAPER_VERSION__")
 }

@@ -9,18 +9,18 @@ test("sender creates a sealed note that cannot be revealed twice", async ({ page
   await expect(page.locator("#create-view")).toBeVisible();
   await expect(page.locator("#reveal-view")).toBeHidden();
   await expect(page.locator("#secret")).toBeFocused();
-  await expect(page).toHaveTitle("Paper — seal a one-view note");
+  await expect(page).toHaveTitle("Paper — create a one-view private note");
 
   await page.locator("#secret").fill("This payload is too large.");
   await expect(page.locator("#char-count")).toContainText("26 / 20");
-  await expect(page.locator("#char-count")).toHaveCSS("color", "rgb(217, 48, 37)");
+  await expect(page.locator("#char-count")).toHaveCSS("color", "rgb(160, 68, 56)");
 
   await page.locator("#secret").fill("Meet at 9.");
   await expect(page.locator("#char-count")).toContainText("10 / 20");
 
   await page.locator("button[type='submit']").click();
   await expect(page.locator("#result")).toBeVisible();
-  await expect(page.locator("#classification-stamp")).toHaveText("ARMED");
+  await expect(page.locator("#classification-stamp")).toHaveText("Link ready");
   await expect(page.locator("#secret")).toHaveValue("");
 
   const shareURL = await page.locator("#share-url").inputValue();
@@ -36,18 +36,20 @@ test("sender creates a sealed note that cannot be revealed twice", async ({ page
   await page.goto(shareURL);
   await expect(page.locator("#create-view")).toBeHidden();
   await expect(page.locator("#reveal-view")).toBeVisible();
-  await expect(page.locator("#classification-stamp")).toHaveText("EYES ONLY");
-  await expect(page).toHaveTitle("Paper — sealed transmission");
+  await expect(page.locator("#classification-stamp-reveal")).toHaveText("Unopened");
+  await expect(page).toHaveTitle("Paper — open a private note");
 
   await page.locator("#reveal-button").click();
   await expect(page.locator("#secret-output")).toHaveText("Meet at 9.");
   await expect(page.locator("#copy-secret")).toBeVisible();
   await expect(page.locator("#reveal-button")).toBeHidden();
-  await expect(page.locator("#classification-stamp")).toHaveText("DECLASSIFIED");
+  await expect(page.locator("#classification-stamp-reveal")).toHaveText("Opened");
+  await expect(page.locator("#reveal-title")).toHaveText("Your private note.");
+  await expect(page.locator("#sealed-title")).toHaveText("Nothing left on our server.");
   expect(page.url()).not.toContain("#");
 
   await page.locator("#copy-secret").click();
-  await expect(page.locator("#status")).toContainText("Secret copied.");
+  await expect(page.locator("#status")).toContainText("Note copied.");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Meet at 9.");
 
   const secondPage = await page.context().newPage();
@@ -69,7 +71,7 @@ test("mobile layout does not create horizontal overflow in primary states", asyn
   await page.goto(baseURL);
 
   await expect(page.locator("#create-view")).toBeVisible();
-  await expect(page.locator(".classified-bar__brand span")).toBeHidden();
+  await expect(page.locator(".browser-security")).toBeHidden();
   let overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
 
