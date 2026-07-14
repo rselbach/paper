@@ -44,6 +44,44 @@ func TestStoreConsumeDeletesSecret(t *testing.T) {
 	r.ErrorIs(err, errSecretUnavailable)
 }
 
+func TestStoreConsumeRemovesCiphertextFromDatabaseFiles(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "paper-wal.db")
+	store, err := openStore(ctx, path, defaultMaxStoredBytes, defaultMaxStoredItems)
+	r.NoError(err)
+	t.Cleanup(func() {
+		r.NoError(store.Close())
+	})
+
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	id := "walciphertextmarker0000"
+	ciphertext := []byte("PAPER_UNIQUE_CIPHERTEXT_MARKER_4f19b8")
+	consumeVerifier := bytes.Repeat([]byte{1}, 32)
+	_, err = store.Create(ctx, id, ciphertext, []byte("123456789012"), consumeVerifier, now, time.Hour)
+	r.NoError(err)
+
+	databaseFiles, err := filepath.Glob(path + "*")
+	r.NoError(err)
+	foundCiphertext := false
+	for _, databaseFile := range databaseFiles {
+		contents, err := os.ReadFile(databaseFile)
+		r.NoError(err)
+		foundCiphertext = foundCiphertext || bytes.Contains(contents, ciphertext)
+	}
+	r.True(foundCiphertext)
+
+	_, err = store.Consume(ctx, id, consumeVerifier, now)
+	r.NoError(err)
+	databaseFiles, err = filepath.Glob(path + "*")
+	r.NoError(err)
+	for _, databaseFile := range databaseFiles {
+		contents, err := os.ReadFile(databaseFile)
+		r.NoError(err)
+		r.NotContains(contents, ciphertext, databaseFile)
+	}
+}
+
 func TestStoreConsumeRejectsWrongVerifierWithoutDeletingSecret(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()

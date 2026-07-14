@@ -36,6 +36,7 @@ const (
 	defaultMaxStoredItems  = 10_000
 	defaultCreateRate      = 60
 	defaultCleanupInterval = time.Hour
+	walCheckpointTimeout   = 5 * time.Second
 )
 
 var (
@@ -352,6 +353,7 @@ func (s *store) configure(ctx context.Context) error {
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA secure_delete = ON",
 		"PRAGMA journal_mode = WAL",
+		"PRAGMA journal_size_limit = 0",
 	}
 	for _, pragma := range pragmas {
 		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
@@ -535,6 +537,9 @@ func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, 
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit expired secret deletion: %w", err)
 		}
+		if err := s.truncateWAL(); err != nil {
+			return nil, err
+		}
 		return nil, errSecretExpired
 	}
 
@@ -549,6 +554,9 @@ func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit consumed secret deletion: %w", err)
 	}
+	if err := s.truncateWAL(); err != nil {
+		return nil, err
+	}
 
 	return &secret, nil
 }
@@ -561,6 +569,20 @@ func (s *store) DeleteExpired(ctx context.Context, now time.Time) error {
 	)
 	if err != nil {
 		return fmt.Errorf("delete expired secrets: %w", err)
+	}
+	return s.truncateWAL()
+}
+
+func (s *store) truncateWAL() error {
+	ctx, cancel := context.WithTimeout(context.Background(), walCheckpointTimeout)
+	defer cancel()
+
+	var busy, logFrames, checkpointedFrames int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
+		return fmt.Errorf("truncate sqlite WAL: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("truncate sqlite WAL: %d frames remain busy", logFrames-checkpointedFrames)
 	}
 	return nil
 }
