@@ -54,22 +54,17 @@ check_server() {
   check_public_server
 }
 
-require_clean_worktree() {
+current_version() {
   local status
   if ! status="$(git status --porcelain)"; then
     printf 'error: could not inspect the Git worktree\n' >&2
     return 1
   fi
-  if [[ -z "${status}" ]]; then
+  if [[ -n "${status}" ]]; then
+    printf 'dev\n'
     return 0
   fi
 
-  printf 'error: refusing to deploy a dirty worktree:\n%s\n' \
-    "${status}" >&2
-  return 1
-}
-
-current_version() {
   local version
   if ! version="$(git rev-parse HEAD)"; then
     printf 'error: could not read the Git commit\n' >&2
@@ -243,8 +238,6 @@ install_server() {
 }
 
 deploy_server() {
-  #require_clean_worktree
-
   local version
   if ! version="$(current_version)"; then
     return 1

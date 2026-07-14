@@ -3,17 +3,22 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -321,12 +326,63 @@ func TestSecurityHeadersAndAssetCaching(t *testing.T) {
 	r.Equal("same-origin", indexResponse.Header().Get("Cross-Origin-Opener-Policy"))
 	r.Contains(indexResponse.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'")
 
-	assetRequest := httptest.NewRequest(http.MethodGet, "/assets/style.css", nil)
-	assetResponse := httptest.NewRecorder()
-	app.ServeHTTP(assetResponse, assetRequest)
-	r.Equal(http.StatusOK, assetResponse.Code)
-	r.Equal("public, max-age=3600", assetResponse.Header().Get("Cache-Control"))
-	r.Contains(assetResponse.Body.String(), ":root")
+	tests := map[string]struct {
+		pattern    *regexp.Regexp
+		sourcePath string
+	}{
+		"CSS": {
+			pattern:    regexp.MustCompile(`/assets/style\.[0-9a-f]{12}\.css`),
+			sourcePath: "static/assets/style.css",
+		},
+		"JavaScript": {
+			pattern:    regexp.MustCompile(`/assets/app\.[0-9a-f]{12}\.js`),
+			sourcePath: "static/assets/app.js",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			assetPath := tc.pattern.FindString(indexResponse.Body.String())
+			r.NotEmpty(assetPath)
+
+			request := httptest.NewRequest(http.MethodGet, assetPath, nil)
+			response := httptest.NewRecorder()
+			app.ServeHTTP(response, request)
+
+			want, err := fs.ReadFile(staticFiles, tc.sourcePath)
+			r.NoError(err)
+			r.Equal(http.StatusOK, response.Code)
+			r.Equal("public, max-age=31536000, immutable", response.Header().Get("Cache-Control"))
+			r.Equal(want, response.Body.Bytes())
+		})
+	}
+
+	invalidRequest := httptest.NewRequest(http.MethodGet, "/assets/style.invalid.css", nil)
+	invalidResponse := httptest.NewRecorder()
+	app.ServeHTTP(invalidResponse, invalidRequest)
+	r.Equal(http.StatusNotFound, invalidResponse.Code)
+
+	legacyRequest := httptest.NewRequest(http.MethodGet, "/assets/style.css", nil)
+	legacyResponse := httptest.NewRecorder()
+	app.ServeHTTP(legacyResponse, legacyRequest)
+	r.Equal(http.StatusOK, legacyResponse.Code)
+	r.Equal("public, max-age=3600", legacyResponse.Header().Get("Cache-Control"))
+}
+
+func TestLoadFingerprintedAssetUsesContentHash(t *testing.T) {
+	r := require.New(t)
+	content := []byte("Greendale Community College")
+	assets := fstest.MapFS{
+		"style.css": &fstest.MapFile{Data: content},
+	}
+
+	asset, err := loadFingerprintedAsset(assets, "style.css")
+	r.NoError(err)
+
+	sum := sha256.Sum256(content)
+	wantHash := hex.EncodeToString(sum[:6])
+	r.Equal("/assets/style."+wantHash+".css", asset.urlPath)
+	r.Equal(content, asset.content)
 }
 
 func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
@@ -531,6 +587,8 @@ func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 	r.Contains(string(srv.index), "secret may still be destroyed")
 	r.NotContains(string(srv.index), "__PAPER_MAX_BYTES__")
 	r.NotContains(string(srv.index), "__PAPER_VERSION__")
+	r.NotContains(string(srv.index), "__PAPER_STYLE_URL__")
+	r.NotContains(string(srv.index), "__PAPER_APP_URL__")
 }
 
 func TestNormalizePublicOrigin(t *testing.T) {

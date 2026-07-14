@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -79,14 +82,21 @@ type storedSecret struct {
 }
 
 type server struct {
-	store          *store
-	logger         *slog.Logger
-	index          []byte
-	assets         fs.FS
-	publicOrigin   string
-	secretTTL      time.Duration
-	maxSecretBytes int
-	createLimiter  *fixedWindowLimiter
+	store               *store
+	logger              *slog.Logger
+	index               []byte
+	assets              fs.FS
+	fingerprintedAssets map[string]fingerprintedAsset
+	publicOrigin        string
+	secretTTL           time.Duration
+	maxSecretBytes      int
+	createLimiter       *fixedWindowLimiter
+}
+
+type fingerprintedAsset struct {
+	name    string
+	content []byte
+	urlPath string
 }
 
 type fixedWindowLimiter struct {
@@ -632,19 +642,34 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 	if err != nil {
 		return nil, fmt.Errorf("read embedded index: %w", err)
 	}
-	index = bytes.ReplaceAll(index, []byte("__PAPER_MAX_BYTES__"), []byte(strconv.Itoa(maxSecretBytes)))
-	index = bytes.ReplaceAll(index, []byte("__PAPER_VERSION__"), []byte(html.EscapeString(version)))
 
 	assets, err := fs.Sub(staticFiles, "static/assets")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded assets: %w", err)
 	}
+	style, err := loadFingerprintedAsset(assets, "style.css")
+	if err != nil {
+		return nil, err
+	}
+	app, err := loadFingerprintedAsset(assets, "app.js")
+	if err != nil {
+		return nil, err
+	}
+
+	index = bytes.ReplaceAll(index, []byte("__PAPER_MAX_BYTES__"), []byte(strconv.Itoa(maxSecretBytes)))
+	index = bytes.ReplaceAll(index, []byte("__PAPER_VERSION__"), []byte(html.EscapeString(version)))
+	index = bytes.ReplaceAll(index, []byte("__PAPER_STYLE_URL__"), []byte(style.urlPath))
+	index = bytes.ReplaceAll(index, []byte("__PAPER_APP_URL__"), []byte(app.urlPath))
 
 	return &server{
-		store:          store,
-		logger:         logger,
-		index:          index,
-		assets:         assets,
+		store:  store,
+		logger: logger,
+		index:  index,
+		assets: assets,
+		fingerprintedAssets: map[string]fingerprintedAsset{
+			style.urlPath: style,
+			app.urlPath:   app,
+		},
 		publicOrigin:   publicOrigin,
 		secretTTL:      secretTTL,
 		maxSecretBytes: maxSecretBytes,
@@ -655,8 +680,29 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 	}, nil
 }
 
+func loadFingerprintedAsset(assets fs.FS, name string) (fingerprintedAsset, error) {
+	content, err := fs.ReadFile(assets, name)
+	if err != nil {
+		return fingerprintedAsset{}, fmt.Errorf("read embedded asset %q: %w", name, err)
+	}
+
+	extension := path.Ext(name)
+	base := strings.TrimSuffix(name, extension)
+	sum := sha256.Sum256(content)
+	fingerprint := hex.EncodeToString(sum[:6])
+
+	return fingerprintedAsset{
+		name:    name,
+		content: content,
+		urlPath: "/assets/" + base + "." + fingerprint + extension,
+	}, nil
+}
+
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
+	for urlPath := range s.fingerprintedAssets {
+		mux.HandleFunc("GET "+urlPath, s.handleFingerprintedAsset)
+	}
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(s.assets))))
 	mux.HandleFunc("GET /", s.handleIndex)
 	mux.HandleFunc("GET /s/{id}", s.handleSecretPage)
@@ -664,6 +710,17 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/secrets/{id}/consume", s.handleConsumeSecret)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s.securityHeaders(mux)
+}
+
+func (s *server) handleFingerprintedAsset(w http.ResponseWriter, r *http.Request) {
+	asset, ok := s.fingerprintedAssets[r.URL.Path]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeContent(w, r, asset.name, time.Time{}, bytes.NewReader(asset.content))
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
