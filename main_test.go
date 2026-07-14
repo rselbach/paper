@@ -89,6 +89,67 @@ func TestStoreConsumeExpiredSecretDeletesIt(t *testing.T) {
 	r.ErrorIs(err, errSecretUnavailable)
 }
 
+func TestStoreEnforcesCapacity(t *testing.T) {
+	tests := map[string]struct {
+		maxStoredBytes int64
+		maxStoredItems int
+	}{
+		"stored bytes": {
+			maxStoredBytes: 3,
+			maxStoredItems: 2,
+		},
+		"stored items": {
+			maxStoredBytes: 100,
+			maxStoredItems: 1,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			ctx := context.Background()
+			store := newTestStoreWithLimits(t, tc.maxStoredBytes, tc.maxStoredItems)
+			now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+			consumeVerifier := bytes.Repeat([]byte{1}, 32)
+
+			_, err := store.Create(
+				ctx,
+				"capacityfirstnote00000",
+				[]byte("abc"),
+				[]byte("123456789012"),
+				consumeVerifier,
+				now,
+				time.Hour,
+			)
+			r.NoError(err)
+
+			_, err = store.Create(
+				ctx,
+				"capacitysecondnote0000",
+				[]byte("d"),
+				[]byte("123456789012"),
+				consumeVerifier,
+				now,
+				time.Hour,
+			)
+			r.ErrorIs(err, errStoreCapacity)
+
+			_, err = store.Consume(ctx, "capacityfirstnote00000", consumeVerifier, now)
+			r.NoError(err)
+			_, err = store.Create(
+				ctx,
+				"capacitysecondnote0000",
+				[]byte("d"),
+				[]byte("123456789012"),
+				consumeVerifier,
+				now,
+				time.Hour,
+			)
+			r.NoError(err)
+		})
+	}
+}
+
 func TestExpiredSecretCleanerDeletesExpiredSecrets(t *testing.T) {
 	r := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -229,6 +290,46 @@ func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
 	r.Contains(secondResponse.Body.String(), "secret id already exists")
 }
 
+func TestCreateHandlerRateLimitsRequests(t *testing.T) {
+	r := require.New(t)
+	store := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, defaultMaxSecretBytes, 1)
+	r.NoError(err)
+	app := server.routes()
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{14}, 32))
+
+	firstBody := bytes.NewBufferString(`{"id":"ratelimitfirstnote0000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", firstBody)
+	firstResponse := httptest.NewRecorder()
+	app.ServeHTTP(firstResponse, firstRequest)
+	r.Equal(http.StatusCreated, firstResponse.Code)
+
+	secondBody := bytes.NewBufferString(`{"id":"ratelimitsecondnote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", secondBody)
+	secondResponse := httptest.NewRecorder()
+	app.ServeHTTP(secondResponse, secondRequest)
+	r.Equal(http.StatusTooManyRequests, secondResponse.Code)
+	r.Equal("60", secondResponse.Header().Get("Retry-After"))
+}
+
+func TestCreateHandlerRejectsRequestsAtStorageCapacity(t *testing.T) {
+	r := require.New(t)
+	store := newTestStoreWithLimits(t, 2, defaultMaxStoredItems)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, defaultMaxSecretBytes, defaultCreateRate)
+	r.NoError(err)
+	app := server.routes()
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{15}, 32))
+	body := bytes.NewBufferString(`{"id":"storagecapacitynote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+
+	r.Equal(http.StatusInsufficientStorage, response.Code)
+	r.Contains(response.Body.String(), errStoreCapacity.Error())
+}
+
 func TestCreateHandlerUsesConfiguredPublicOrigin(t *testing.T) {
 	r := require.New(t)
 	app := newTestServerWithOrigin(t, "https://paper.example")
@@ -336,7 +437,7 @@ func TestCreateHandlerRejectsOversizedCiphertext(t *testing.T) {
 	r := require.New(t)
 	store := newTestStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server, err := newServer(store, logger, "", time.Hour, 3)
+	server, err := newServer(store, logger, "", time.Hour, 3, defaultCreateRate)
 	r.NoError(err)
 	app := server.routes()
 
@@ -359,7 +460,7 @@ func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 
 	store := newTestStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := newServer(store, logger, "", time.Hour, 12345)
+	srv, err := newServer(store, logger, "", time.Hour, 12345, defaultCreateRate)
 	r.NoError(err)
 
 	r.Contains(string(srv.index), `<meta name="paper-max-bytes" content="12345">`)
@@ -411,12 +512,18 @@ func TestLoadConfigParsesTTLAndMaxBytes(t *testing.T) {
 	t.Setenv("PAPER_PUBLIC_ORIGIN", "")
 	t.Setenv("PAPER_SECRET_TTL_HOURS", "12")
 	t.Setenv("PAPER_MAX_SECRET_BYTES", "2048")
+	t.Setenv("PAPER_MAX_STORED_BYTES", "1048576")
+	t.Setenv("PAPER_MAX_STORED_SECRETS", "250")
+	t.Setenv("PAPER_CREATE_RATE_PER_MINUTE", "12")
 	t.Setenv("PAPER_CLEANUP_INTERVAL_MINUTES", "")
 
 	cfg, err := loadConfig()
 	r.NoError(err)
 	r.Equal(12*time.Hour, cfg.secretTTL)
 	r.Equal(2048, cfg.maxSecretBytes)
+	r.Equal(int64(1048576), cfg.maxStoredBytes)
+	r.Equal(250, cfg.maxStoredItems)
+	r.Equal(12, cfg.createRate)
 }
 
 func TestLoadConfigRejectsNonPositiveNumericValues(t *testing.T) {
@@ -446,6 +553,33 @@ func TestLoadConfigRejectsNonPositiveNumericValues(t *testing.T) {
 		r.Error(err)
 		r.Contains(err.Error(), "PAPER_MAX_SECRET_BYTES must be positive")
 	})
+
+	t.Run("max stored bytes", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_MAX_STORED_BYTES", "0")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_MAX_STORED_BYTES must be positive")
+	})
+
+	t.Run("max stored secrets", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_MAX_STORED_SECRETS", "0")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_MAX_STORED_SECRETS must be positive")
+	})
+
+	t.Run("create rate", func(t *testing.T) {
+		r := require.New(t)
+		t.Setenv("PAPER_CREATE_RATE_PER_MINUTE", "0")
+
+		_, err := loadConfig()
+		r.Error(err)
+		r.Contains(err.Error(), "PAPER_CREATE_RATE_PER_MINUTE must be positive")
+	})
 }
 
 func TestDeploymentArtifactsMatchExpectedServiceBehavior(t *testing.T) {
@@ -471,6 +605,9 @@ func TestDeploymentArtifactsMatchExpectedServiceBehavior(t *testing.T) {
 		"Environment=PAPER_SECRET_TTL_HOURS=168",
 		"Environment=PAPER_CLEANUP_INTERVAL_MINUTES=60",
 		"Environment=PAPER_MAX_SECRET_BYTES=65536",
+		"Environment=PAPER_MAX_STORED_BYTES=1073741824",
+		"Environment=PAPER_MAX_STORED_SECRETS=10000",
+		"Environment=PAPER_CREATE_RATE_PER_MINUTE=60",
 		"NoNewPrivileges=true",
 		"PrivateTmp=true",
 		"ProtectHome=true",
@@ -537,7 +674,7 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 	r.NoError(err)
 	r.NoError(db.Close())
 
-	store, err := openStore(ctx, path)
+	store, err := openStore(ctx, path, defaultMaxStoredBytes, defaultMaxStoredItems)
 	r.NoError(err)
 	defer func() {
 		r.NoError(store.Close())
@@ -571,7 +708,17 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 
 func newTestStore(t *testing.T) *store {
 	t.Helper()
-	store, err := openStore(context.Background(), filepath.Join(t.TempDir(), "paper-test.db"))
+	return newTestStoreWithLimits(t, defaultMaxStoredBytes, defaultMaxStoredItems)
+}
+
+func newTestStoreWithLimits(t *testing.T, maxStoredBytes int64, maxStoredItems int) *store {
+	t.Helper()
+	store, err := openStore(
+		context.Background(),
+		filepath.Join(t.TempDir(), "paper-test.db"),
+		maxStoredBytes,
+		maxStoredItems,
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, store.Close())
@@ -595,7 +742,7 @@ func newTestServerWithOrigin(t *testing.T, publicOrigin string) http.Handler {
 	t.Helper()
 	store := newTestStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server, err := newServer(store, logger, publicOrigin, time.Hour, defaultMaxSecretBytes)
+	server, err := newServer(store, logger, publicOrigin, time.Hour, defaultMaxSecretBytes, defaultCreateRate)
 	require.NoError(t, err)
 	return server.routes()
 }

@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,9 @@ const (
 	defaultDBPath          = "paper.db"
 	defaultSecretTTL       = 7 * 24 * time.Hour
 	defaultMaxSecretBytes  = 64 * 1024
+	defaultMaxStoredBytes  = 1024 * 1024 * 1024
+	defaultMaxStoredItems  = 10_000
+	defaultCreateRate      = 60
 	defaultCleanupInterval = time.Hour
 )
 
@@ -44,6 +48,7 @@ var (
 	errSecretUnavailable  = errors.New("secret is unavailable or already used")
 	errSecretExpired      = errors.New("secret expired")
 	errSecretUnauthorized = errors.New("invalid secret key proof")
+	errStoreCapacity      = errors.New("secret storage capacity reached")
 	tokenPattern          = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
 )
 
@@ -54,10 +59,15 @@ type config struct {
 	secretTTL       time.Duration
 	cleanupInterval time.Duration
 	maxSecretBytes  int
+	maxStoredBytes  int64
+	maxStoredItems  int
+	createRate      int
 }
 
 type store struct {
-	db *sql.DB
+	db             *sql.DB
+	maxStoredBytes int64
+	maxStoredItems int
 }
 
 type storedSecret struct {
@@ -74,6 +84,15 @@ type server struct {
 	publicOrigin   string
 	secretTTL      time.Duration
 	maxSecretBytes int
+	createLimiter  *fixedWindowLimiter
+}
+
+type fixedWindowLimiter struct {
+	mu          sync.Mutex
+	limit       int
+	window      time.Duration
+	windowStart time.Time
+	count       int
 }
 
 type createSecretRequest struct {
@@ -113,7 +132,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, err := openStore(ctx, cfg.dbPath)
+	store, err := openStore(ctx, cfg.dbPath, cfg.maxStoredBytes, cfg.maxStoredItems)
 	if err != nil {
 		logger.Error("open store", "error", err)
 		os.Exit(1)
@@ -130,7 +149,7 @@ func main() {
 	}
 	startExpiredSecretCleaner(ctx, store, logger, cfg.cleanupInterval)
 
-	app, err := newServer(store, logger, cfg.publicOrigin, cfg.secretTTL, cfg.maxSecretBytes)
+	app, err := newServer(store, logger, cfg.publicOrigin, cfg.secretTTL, cfg.maxSecretBytes, cfg.createRate)
 	if err != nil {
 		logger.Error("create server", "error", err)
 		os.Exit(1)
@@ -178,6 +197,9 @@ func loadConfig() (config, error) {
 		secretTTL:       defaultSecretTTL,
 		cleanupInterval: defaultCleanupInterval,
 		maxSecretBytes:  defaultMaxSecretBytes,
+		maxStoredBytes:  defaultMaxStoredBytes,
+		maxStoredItems:  defaultMaxStoredItems,
+		createRate:      defaultCreateRate,
 	}
 
 	if value := os.Getenv("PAPER_PUBLIC_ORIGIN"); value != "" {
@@ -221,6 +243,39 @@ func loadConfig() (config, error) {
 		cfg.maxSecretBytes = maxBytes
 	}
 
+	if value := os.Getenv("PAPER_MAX_STORED_BYTES"); value != "" {
+		maxBytes, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return config{}, fmt.Errorf("parse PAPER_MAX_STORED_BYTES: %w", err)
+		}
+		if maxBytes <= 0 {
+			return config{}, fmt.Errorf("PAPER_MAX_STORED_BYTES must be positive: %d", maxBytes)
+		}
+		cfg.maxStoredBytes = maxBytes
+	}
+
+	if value := os.Getenv("PAPER_MAX_STORED_SECRETS"); value != "" {
+		maxItems, err := strconv.Atoi(value)
+		if err != nil {
+			return config{}, fmt.Errorf("parse PAPER_MAX_STORED_SECRETS: %w", err)
+		}
+		if maxItems <= 0 {
+			return config{}, fmt.Errorf("PAPER_MAX_STORED_SECRETS must be positive: %d", maxItems)
+		}
+		cfg.maxStoredItems = maxItems
+	}
+
+	if value := os.Getenv("PAPER_CREATE_RATE_PER_MINUTE"); value != "" {
+		createRate, err := strconv.Atoi(value)
+		if err != nil {
+			return config{}, fmt.Errorf("parse PAPER_CREATE_RATE_PER_MINUTE: %w", err)
+		}
+		if createRate <= 0 {
+			return config{}, fmt.Errorf("PAPER_CREATE_RATE_PER_MINUTE must be positive: %d", createRate)
+		}
+		cfg.createRate = createRate
+	}
+
 	return cfg, nil
 }
 
@@ -253,13 +308,32 @@ func getenv(key string, fallback string) string {
 	return value
 }
 
-func openStore(ctx context.Context, path string) (*store, error) {
+func (l *fixedWindowLimiter) Allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.windowStart.IsZero() || now.Before(l.windowStart) || now.Sub(l.windowStart) >= l.window {
+		l.windowStart = now
+		l.count = 0
+	}
+	if l.count >= l.limit {
+		return false
+	}
+	l.count++
+	return true
+}
+
+func openStore(ctx context.Context, path string, maxStoredBytes int64, maxStoredItems int) (*store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	store := &store{db: db}
+	store := &store{
+		db:             db,
+		maxStoredBytes: maxStoredBytes,
+		maxStoredItems: maxStoredItems,
+	}
 	if err := store.configure(ctx); err != nil {
 		closeErr := db.Close()
 		if closeErr != nil {
@@ -387,7 +461,24 @@ func (s *store) Close() error {
 
 func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce []byte, consumeVerifier []byte, now time.Time, ttl time.Duration) (time.Time, error) {
 	expiresAt := now.UTC().Add(ttl)
-	result, err := s.db.ExecContext(
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("begin create transaction: %w", err)
+	}
+
+	var storedBytes int64
+	var storedItems int
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT COALESCE(SUM(length(ciphertext)), 0), COUNT(*) FROM secrets",
+	).Scan(&storedBytes, &storedItems); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read secret storage usage: %w", err))
+	}
+	if storedItems >= s.maxStoredItems || int64(len(ciphertext)) > s.maxStoredBytes-storedBytes {
+		return time.Time{}, rollbackWithError(tx, errStoreCapacity)
+	}
+
+	result, err := tx.ExecContext(
 		ctx,
 		`INSERT OR IGNORE INTO secrets (
 			id, ciphertext, nonce, consume_verifier, created_at_unix, expires_at_unix
@@ -400,15 +491,18 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 		expiresAt.Unix(),
 	)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("insert secret: %w", err)
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("insert secret: %w", err))
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read inserted row count: %w", err)
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read inserted row count: %w", err))
 	}
 	if rowsAffected == 0 {
-		return time.Time{}, errSecretExists
+		return time.Time{}, rollbackWithError(tx, errSecretExists)
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("commit created secret: %w", err)
 	}
 
 	return expiresAt, nil
@@ -496,7 +590,7 @@ func rollbackWithError(tx *sql.Tx, err error) error {
 	return err
 }
 
-func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL time.Duration, maxSecretBytes int) (*server, error) {
+func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL time.Duration, maxSecretBytes int, createRate int) (*server, error) {
 	index, err := staticFiles.ReadFile("static/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded index: %w", err)
@@ -517,6 +611,10 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 		publicOrigin:   publicOrigin,
 		secretTTL:      secretTTL,
 		maxSecretBytes: maxSecretBytes,
+		createLimiter: &fixedWindowLimiter{
+			limit:  createRate,
+			window: time.Minute,
+		},
 	}, nil
 }
 
@@ -564,6 +662,12 @@ func (s *server) writeHTML(w http.ResponseWriter) {
 }
 
 func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
+	if !s.createLimiter.Allow(time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "secret creation rate limit exceeded", s.logger)
+		return
+	}
+
 	maxBodyBytes := base64.RawURLEncoding.EncodedLen(s.maxSecretBytes+32) + 4096
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxBodyBytes))
 	defer func() {
@@ -588,8 +692,12 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 
 	expiresAt, err := s.store.Create(r.Context(), request.ID, ciphertext, nonce, consumeVerifier, time.Now(), s.secretTTL)
 	if err != nil {
-		if errors.Is(err, errSecretExists) {
+		switch {
+		case errors.Is(err, errSecretExists):
 			writeError(w, http.StatusConflict, err.Error(), s.logger)
+			return
+		case errors.Is(err, errStoreCapacity):
+			writeError(w, http.StatusInsufficientStorage, err.Error(), s.logger)
 			return
 		}
 		s.logger.Error("store secret", "error", err)

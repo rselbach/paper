@@ -19,6 +19,9 @@ Environment=PAPER_PUBLIC_ORIGIN=https://paper.example.com
 Environment=PAPER_SECRET_TTL_HOURS=168
 Environment=PAPER_CLEANUP_INTERVAL_MINUTES=60
 Environment=PAPER_MAX_SECRET_BYTES=65536
+Environment=PAPER_MAX_STORED_BYTES=1073741824
+Environment=PAPER_MAX_STORED_SECRETS=10000
+Environment=PAPER_CREATE_RATE_PER_MINUTE=60
 
 NoNewPrivileges=true
 PrivateTmp=true

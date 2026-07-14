@@ -19,6 +19,9 @@ PAPER_PUBLIC_ORIGIN=https://paper.example.com \
 PAPER_SECRET_TTL_HOURS=168 \
 PAPER_CLEANUP_INTERVAL_MINUTES=60 \
 PAPER_MAX_SECRET_BYTES=65536 \
+PAPER_MAX_STORED_BYTES=1073741824 \
+PAPER_MAX_STORED_SECRETS=10000 \
+PAPER_CREATE_RATE_PER_MINUTE=60 \
 go run .
 ```
 
@@ -35,6 +38,8 @@ go run .
   returning it to the browser.
 - Expired notes are deleted at startup, opportunistically on reveal, and by a
   periodic cleanup ticker.
+- Creation is rate limited, and stored ciphertext is bounded by byte and item
+  budgets so anonymous traffic cannot exhaust the host filesystem.
 - In production, set `PAPER_PUBLIC_ORIGIN` so generated share links use a
   trusted configured origin instead of request headers.
 - Security headers set `no-store`, CSP, `no-referrer`, and related browser
