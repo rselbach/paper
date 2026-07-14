@@ -36,6 +36,7 @@ const (
 	defaultMaxStoredItems  = 10_000
 	defaultCreateRate      = 60
 	defaultCleanupInterval = time.Hour
+	maxConfigDuration      = time.Duration(1<<63 - 1)
 	walCheckpointTimeout   = 5 * time.Second
 )
 
@@ -212,23 +213,29 @@ func loadConfig() (config, error) {
 	}
 
 	if value := os.Getenv("PAPER_SECRET_TTL_HOURS"); value != "" {
-		hours, err := strconv.Atoi(value)
+		hours, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return config{}, fmt.Errorf("parse PAPER_SECRET_TTL_HOURS: %w", err)
 		}
 		if hours <= 0 {
 			return config{}, fmt.Errorf("PAPER_SECRET_TTL_HOURS must be positive: %d", hours)
 		}
+		if hours > int64(maxConfigDuration/time.Hour) {
+			return config{}, fmt.Errorf("PAPER_SECRET_TTL_HOURS is too large: %d", hours)
+		}
 		cfg.secretTTL = time.Duration(hours) * time.Hour
 	}
 
 	if value := os.Getenv("PAPER_CLEANUP_INTERVAL_MINUTES"); value != "" {
-		minutes, err := strconv.Atoi(value)
+		minutes, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return config{}, fmt.Errorf("parse PAPER_CLEANUP_INTERVAL_MINUTES: %w", err)
 		}
 		if minutes <= 0 {
 			return config{}, fmt.Errorf("PAPER_CLEANUP_INTERVAL_MINUTES must be positive: %d", minutes)
+		}
+		if minutes > int64(maxConfigDuration/time.Minute) {
+			return config{}, fmt.Errorf("PAPER_CLEANUP_INTERVAL_MINUTES is too large: %d", minutes)
 		}
 		cfg.cleanupInterval = time.Duration(minutes) * time.Minute
 	}

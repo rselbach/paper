@@ -622,6 +622,36 @@ func TestLoadConfigRejectsNonPositiveNumericValues(t *testing.T) {
 	})
 }
 
+func TestLoadConfigRejectsOverflowingDurations(t *testing.T) {
+	tests := map[string]struct {
+		key   string
+		value string
+		want  string
+	}{
+		"ttl": {
+			key:   "PAPER_SECRET_TTL_HOURS",
+			value: "2562048",
+			want:  "PAPER_SECRET_TTL_HOURS is too large",
+		},
+		"cleanup interval": {
+			key:   "PAPER_CLEANUP_INTERVAL_MINUTES",
+			value: "153722868",
+			want:  "PAPER_CLEANUP_INTERVAL_MINUTES is too large",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			t.Setenv(tc.key, tc.value)
+
+			_, err := loadConfig()
+			r.Error(err)
+			r.Contains(err.Error(), tc.want)
+		})
+	}
+}
+
 func TestDeploymentArtifactsMatchExpectedServiceBehavior(t *testing.T) {
 	r := require.New(t)
 
