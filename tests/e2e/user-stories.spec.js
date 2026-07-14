@@ -24,7 +24,10 @@ test("sender creates a sealed note that cannot be revealed twice", async ({ page
   await expect(page.locator("#secret")).toHaveValue("");
 
   const shareURL = await page.locator("#share-url").inputValue();
-  expect(shareURL).toMatch(/^http:\/\/127\.0\.0\.1:18081\/s\/[A-Za-z0-9_-]{22}#[A-Za-z0-9_-]+$/);
+  const parsedShareURL = new URL(shareURL);
+  expect(parsedShareURL.origin).toBe(new URL(baseURL).origin);
+  expect(parsedShareURL.pathname).toMatch(/^\/s\/[A-Za-z0-9_-]{22}$/);
+  expect(parsedShareURL.hash).toMatch(/^#[A-Za-z0-9_-]+$/);
 
   await page.locator("#copy-link").click();
   await expect(page.locator("#status")).toContainText("Link copied.");
