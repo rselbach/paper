@@ -56,7 +56,11 @@ Check the existing server without changing it:
 ./deploy/deploy-server.sh check
 ```
 
-Deploy the current worktree to `ssh.rselbach.com`:
+Pushes to `main` deploy to `paper.exe.xyz` with GitHub Actions. The workflow
+requires the `PAPER_SSH_PRIVATE_KEY` and `PAPER_SSH_KNOWN_HOSTS` repository
+secrets.
+
+Deploy the current worktree manually to the same host:
 
 ```sh
 ./deploy/deploy-server.sh deploy

@@ -1,0 +1,48 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PAPER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PAPER_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "${HOME}/.ssh"
+          install -m 0600 /dev/null "${HOME}/.ssh/paper_deploy"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/paper_deploy"
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          {
+            printf 'Host paper.exe.xyz\n'
+            printf '  BatchMode yes\n'
+            printf '  IdentitiesOnly yes\n'
+            printf '  IdentityFile %s/.ssh/paper_deploy\n' "${HOME}"
+            printf '  StrictHostKeyChecking yes\n'
+          } > "${HOME}/.ssh/config"
+          chmod 0600 "${HOME}/.ssh/config" "${HOME}/.ssh/known_hosts"
+
+      - name: Deploy
+        run: ./deploy/deploy-server.sh deploy

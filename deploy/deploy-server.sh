@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Cross-compile Paper locally, deploy it to ssh.rselbach.com, and verify it.
+# Cross-compile Paper locally, deploy it to exe.dev, and verify it.
 
 set -euo pipefail
 
-readonly SSH_TARGET="ssh.rselbach.com"
+readonly SSH_TARGET="${PAPER_SSH_TARGET:-paper.exe.xyz}"
 readonly SERVICE="paper.service"
+readonly LOCAL_SERVICE="deploy/${SERVICE}"
 readonly LOCAL_ARTIFACT="/tmp/paper-linux-amd64"
-readonly REMOTE_ARTIFACT="/data/home/rselbach/paper-linux-amd64"
+readonly REMOTE_UPLOAD_DIR="/home/exedev"
+readonly REMOTE_ARTIFACT="${REMOTE_UPLOAD_DIR}/paper-linux-amd64"
 readonly REMOTE_BINARY="/usr/local/bin/paper"
-readonly REMOTE_DATABASE="/data/home/paper/paper.db"
-readonly LOCAL_HEALTH_URL="http://127.0.0.1:11432/healthz"
-readonly LOCAL_INDEX_URL="http://127.0.0.1:11432/"
+readonly REMOTE_DATABASE="/var/lib/paper/paper.db"
+readonly REMOTE_SERVICE="/etc/systemd/system/${SERVICE}"
+readonly REMOTE_SERVICE_ARTIFACT="${REMOTE_UPLOAD_DIR}/${SERVICE}"
+readonly LOCAL_HEALTH_URL="http://127.0.0.1:8000/healthz"
+readonly LOCAL_INDEX_URL="http://127.0.0.1:8000/"
 readonly PUBLIC_HEALTH_URL="https://paper.rselbach.com/healthz"
 readonly PUBLIC_INDEX_URL="https://paper.rselbach.com/"
 readonly -a SSH_OPTIONS=(
@@ -77,9 +81,20 @@ build_server() {
   local version
   version="${1}"
 
-  if ! just check; then
-    printf 'error: checks failed\n' >&2
-    return 1
+  if command -v just >/dev/null 2>&1; then
+    if ! just check; then
+      printf 'error: checks failed\n' >&2
+      return 1
+    fi
+  else
+    if ! go test ./...; then
+      printf 'error: tests failed\n' >&2
+      return 1
+    fi
+    if ! go vet ./...; then
+      printf 'error: go vet failed\n' >&2
+      return 1
+    fi
   fi
 
   local -a build_command=(
@@ -103,7 +118,8 @@ upload_server() {
   if ! scp \
     "${SSH_OPTIONS[@]}" \
     "${LOCAL_ARTIFACT}" \
-    "${SSH_TARGET}:${REMOTE_ARTIFACT}"; then
+    "${LOCAL_SERVICE}" \
+    "${SSH_TARGET}:${REMOTE_UPLOAD_DIR}/"; then
     printf 'error: upload failed\n' >&2
     return 1
   fi
@@ -137,12 +153,24 @@ verify_upload() {
 }
 
 backup_server() {
+  local binary_backup_command
+  binary_backup_command="if [[ -f ${REMOTE_BINARY} ]]; then"
+  binary_backup_command+=" sudo cp -a ${REMOTE_BINARY}"
+  binary_backup_command+=" ${REMOTE_BINARY}.previous; fi"
   run_remote \
-    "sudo cp -a ${REMOTE_BINARY} ${REMOTE_BINARY}.previous"
+    "${binary_backup_command}"
+
+  local service_backup_command
+  service_backup_command="if [[ -f ${REMOTE_SERVICE} ]]; then"
+  service_backup_command+=" sudo cp -a ${REMOTE_SERVICE}"
+  service_backup_command+=" ${REMOTE_SERVICE}.previous; fi"
+  run_remote \
+    "${service_backup_command}"
 
   local backup_command
-  backup_command="sudo -u paper sqlite3 ${REMOTE_DATABASE}"
-  backup_command+=" \".backup '${REMOTE_DATABASE}.previous'\""
+  backup_command="if [[ -f ${REMOTE_DATABASE} ]]; then"
+  backup_command+=" sudo -u paper sqlite3 ${REMOTE_DATABASE}"
+  backup_command+=" \".backup '${REMOTE_DATABASE}.previous'\"; fi"
   run_remote "${backup_command}"
 }
 
@@ -194,11 +222,29 @@ verify_public_version() {
 
 rollback_server() {
   printf 'Rolling back to the previous binary...\n' >&2
+  if ! run_remote "sudo test -f ${REMOTE_BINARY}.previous"; then
+    printf 'error: no previous binary is available for rollback\n' >&2
+    return 1
+  fi
+  if ! run_remote "sudo test -f ${REMOTE_SERVICE}.previous"; then
+    printf 'error: no previous service is available for rollback\n' >&2
+    return 1
+  fi
+
   local rollback_command
   rollback_command="sudo install -o root -g root -m 0755"
   rollback_command+=" ${REMOTE_BINARY}.previous ${REMOTE_BINARY}"
   if ! run_remote "${rollback_command}"; then
     printf 'error: binary rollback failed\n' >&2
+    return 1
+  fi
+  if ! run_remote \
+    "sudo cp -a ${REMOTE_SERVICE}.previous ${REMOTE_SERVICE}"; then
+    printf 'error: service rollback failed\n' >&2
+    return 1
+  fi
+  if ! run_remote "sudo systemctl daemon-reload"; then
+    printf 'error: systemd reload after rollback failed\n' >&2
     return 1
   fi
   if ! run_remote "sudo systemctl restart ${SERVICE}"; then
@@ -220,6 +266,9 @@ install_server() {
   install_command+=" ${REMOTE_ARTIFACT} ${REMOTE_BINARY}.next"
   run_remote "${install_command}"
   run_remote "sudo mv ${REMOTE_BINARY}.next ${REMOTE_BINARY}"
+  run_remote \
+    "sudo install -o root -g root -m 0644 ${REMOTE_SERVICE_ARTIFACT} ${REMOTE_SERVICE}"
+  run_remote "sudo systemctl daemon-reload"
 
   if ! run_remote "sudo systemctl restart ${SERVICE}"; then
     printf 'error: service restart failed\n' >&2
