@@ -216,6 +216,39 @@ func TestStoreEnforcesCapacity(t *testing.T) {
 	}
 }
 
+func TestStoreCapacityIgnoresExpiredSecrets(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	store := newTestStoreWithLimits(t, 1000, 1)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	consumeVerifier := bytes.Repeat([]byte{1}, 32)
+
+	_, err := store.db.ExecContext(
+		ctx,
+		`INSERT INTO secrets (
+			id, ciphertext, nonce, consume_verifier, created_at_unix, expires_at_unix
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		"expiredfillsquota000000",
+		[]byte("abc"),
+		[]byte("123456789012"),
+		consumeVerifier,
+		now.Add(-2*time.Hour).Unix(),
+		now.Add(-time.Hour).Unix(),
+	)
+	r.NoError(err)
+
+	_, err = store.Create(
+		ctx,
+		"newsecretshouldsucceed0",
+		[]byte("d"),
+		[]byte("123456789012"),
+		consumeVerifier,
+		now,
+		time.Hour,
+	)
+	r.NoError(err)
+}
+
 func TestExpiredSecretCleanerDeletesExpiredSecrets(t *testing.T) {
 	r := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())

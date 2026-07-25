@@ -537,7 +537,10 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 	var storedItems int
 	if err := tx.QueryRowContext(
 		ctx,
-		"SELECT COALESCE(SUM(length(ciphertext)), 0), COUNT(*) FROM secrets",
+		`SELECT COALESCE(SUM(length(ciphertext)), 0), COUNT(*)
+		 FROM secrets
+		 WHERE expires_at_unix > ?`,
+		now.UTC().Unix(),
 	).Scan(&storedBytes, &storedItems); err != nil {
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read secret storage usage: %w", err))
 	}
