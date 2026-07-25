@@ -328,31 +328,57 @@ rollback_or_warn() {
   fi
 }
 
+rollback_install() {
+  local reason
+  reason="${1}"
+
+  printf 'error: %s\n' "${reason}" >&2
+  rollback_or_warn
+}
+
 install_server() {
   local version
   version="${1}"
 
-  local install_command
-  install_command="sudo install -o root -g root -m 0755"
-  install_command+=" ${REMOTE_ARTIFACT} ${REMOTE_BINARY}.next"
-  run_remote "${install_command}"
-  run_remote "sudo mv ${REMOTE_BINARY}.next ${REMOTE_BINARY}"
-  run_remote \
-    "sudo install -o root -g root -m 0644 ${REMOTE_SERVICE_ARTIFACT} ${REMOTE_SERVICE}"
-  run_remote "sudo systemctl daemon-reload"
+  local binary_install_command
+  binary_install_command="sudo install -o root -g root -m 0755"
+  binary_install_command+=" ${REMOTE_ARTIFACT} ${REMOTE_BINARY}.next"
+  if ! run_remote "${binary_install_command}"; then
+    printf 'error: binary staging failed\n' >&2
+    return 1
+  fi
+
+  local service_install_command
+  service_install_command="sudo install -o root -g root -m 0644"
+  service_install_command+=" ${REMOTE_SERVICE_ARTIFACT} ${REMOTE_SERVICE}.next"
+  if ! run_remote "${service_install_command}"; then
+    printf 'error: service staging failed\n' >&2
+    return 1
+  fi
+
+  if ! run_remote "sudo mv ${REMOTE_BINARY}.next ${REMOTE_BINARY}"; then
+    printf 'error: binary installation failed\n' >&2
+    return 1
+  fi
+  if ! run_remote "sudo mv ${REMOTE_SERVICE}.next ${REMOTE_SERVICE}"; then
+    rollback_install "service installation failed"
+    return 1
+  fi
+  if ! run_remote "sudo systemctl daemon-reload"; then
+    rollback_install "systemd reload failed"
+    return 1
+  fi
 
   if ! run_remote "sudo systemctl restart ${SERVICE}"; then
-    printf 'error: service restart failed\n' >&2
-    rollback_server
+    rollback_install "service restart failed"
     return 1
   fi
   if ! check_local_server; then
-    printf 'error: deployed service is unhealthy\n' >&2
-    rollback_server
+    rollback_install "deployed service is unhealthy"
     return 1
   fi
   if ! verify_local_version "${version}"; then
-    rollback_server
+    rollback_install "deployed version verification failed"
     return 1
   fi
 }

@@ -37,6 +37,28 @@ run_remote_status() {
   return "${status}"
 }
 
+run_remote() {
+  local command
+  command="${1}"
+  REMOTE_CALL_COUNT=$((REMOTE_CALL_COUNT + 1))
+  printf '%s\n' "${command}" >>"${REMOTE_COMMAND_LOG}"
+
+  if ((REMOTE_CALL_COUNT == REMOTE_FAIL_AT)); then
+    return 1
+  fi
+  if [[ "${command}" == *"${LOCAL_HEALTH_URL}"* ]]; then
+    printf 'ok\n'
+  fi
+  if [[ "${command}" == *"${LOCAL_INDEX_URL}"* ]]; then
+    printf '<meta name="paper-version" content="%s">\n' \
+      "${INSTALL_VERSION}"
+  fi
+}
+
+rollback_server() {
+  ROLLBACK_COUNT=$((ROLLBACK_COUNT + 1))
+}
+
 sleep() {
   :
 }
@@ -51,6 +73,16 @@ assert_status() {
   "$@" >/dev/null 2>&1 || status=$?
   if ((status != want)); then
     fail "${label}: got status ${status}, want ${want}"
+  fi
+}
+
+assert_value() {
+  local want got label
+  want="${1}"
+  got="${2}"
+  label="${3}"
+  if [[ "${got}" != "${want}" ]]; then
+    fail "${label}: got ${got}, want ${want}"
   fi
 }
 
@@ -98,15 +130,48 @@ test_public_version_classification() {
     verify_public_version "${version}"
 }
 
+reset_install_mocks() {
+  REMOTE_CALL_COUNT=0
+  REMOTE_FAIL_AT="${1}"
+  ROLLBACK_COUNT=0
+  INSTALL_VERSION="community-test-version"
+  : >"${REMOTE_COMMAND_LOG}"
+}
+
+test_install_rolls_back_after_binary_promotion() {
+  reset_install_mocks 4
+  assert_status 1 "service promotion failure" \
+    install_server "${INSTALL_VERSION}"
+  assert_value 1 "${ROLLBACK_COUNT}" \
+    "rollback count after service promotion failure"
+
+  reset_install_mocks 5
+  assert_status 1 "daemon reload failure" \
+    install_server "${INSTALL_VERSION}"
+  assert_value 1 "${ROLLBACK_COUNT}" \
+    "rollback count after daemon reload failure"
+
+  reset_install_mocks 0
+  assert_status 0 "successful install" \
+    install_server "${INSTALL_VERSION}"
+  assert_value 0 "${ROLLBACK_COUNT}" \
+    "rollback count after successful install"
+}
+
 main() {
   TEST_DIR="$(mktemp -d)"
-  trap 'rm -f "${COMMAND_LOG}"; rmdir "${TEST_DIR}"' EXIT
   COMMAND_LOG="${TEST_DIR}/commands"
+  REMOTE_COMMAND_LOG="${TEST_DIR}/remote-commands"
+  trap \
+    'rm -f "${COMMAND_LOG}" "${REMOTE_COMMAND_LOG}"; rmdir "${TEST_DIR}"' \
+    EXIT
   : >"${COMMAND_LOG}"
+  : >"${REMOTE_COMMAND_LOG}"
 
   test_public_health_classification
   test_public_version_classification
   assert_public_commands_are_bounded
+  test_install_rolls_back_after_binary_promotion
   printf 'deploy-server tests passed\n'
 }
 
