@@ -315,6 +315,9 @@ func normalizePublicOrigin(value string) (string, error) {
 	if parsed.Host == "" {
 		return "", fmt.Errorf("host is required")
 	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("userinfo is not allowed")
+	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("query and fragment are not allowed")
 	}

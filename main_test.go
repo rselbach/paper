@@ -712,6 +712,10 @@ func TestNormalizePublicOrigin(t *testing.T) {
 
 	_, err = normalizePublicOrigin("https://paper.example?x=1")
 	r.Error(err)
+
+	_, err = normalizePublicOrigin("https://user:pass@paper.example")
+	r.Error(err)
+	r.Contains(err.Error(), "userinfo is not allowed")
 }
 
 func TestLoadConfigParsesCleanupInterval(t *testing.T) {
