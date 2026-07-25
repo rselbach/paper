@@ -439,6 +439,15 @@ func (s *store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (1)"); err != nil {
 			return fmt.Errorf("record schema_version 1: %w", err)
 		}
+		current = 1
+	}
+	if current < 2 {
+		if err := s.applyMigrationV2(ctx); err != nil {
+			return fmt.Errorf("apply migration v2: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (2)"); err != nil {
+			return fmt.Errorf("record schema_version 2: %w", err)
+		}
 	}
 	return nil
 }
@@ -472,6 +481,19 @@ func (s *store) applyMigrationV1(ctx context.Context) error {
 	}
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS secrets_expires_at_idx ON secrets(expires_at_unix)"); err != nil {
 		return fmt.Errorf("create expires_at index: %w", err)
+	}
+	return nil
+}
+
+// applyMigrationV2 removes secrets that predate consume proofs. Those rows
+// could be burned with only the path id; deleting them closes that hole.
+func (s *store) applyMigrationV2(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM secrets
+		WHERE consume_verifier IS NULL
+		   OR length(consume_verifier) != 32
+	`); err != nil {
+		return fmt.Errorf("delete secrets without consume proofs: %w", err)
 	}
 	return nil
 }
@@ -611,8 +633,7 @@ func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, 
 		return nil, errSecretExpired
 	}
 
-	// Secrets created before consume proofs were introduced have no verifier.
-	if len(secret.ConsumeVerifier) != 0 && (len(secret.ConsumeVerifier) != 32 || subtle.ConstantTimeCompare(secret.ConsumeVerifier, consumeVerifier) != 1) {
+	if len(secret.ConsumeVerifier) != 32 || subtle.ConstantTimeCompare(secret.ConsumeVerifier, consumeVerifier) != 1 {
 		return nil, rollbackWithError(tx, errSecretUnauthorized)
 	}
 

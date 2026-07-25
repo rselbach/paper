@@ -943,10 +943,44 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 	r.True(hasConsumeVerifier)
 	r.NoError(rows.Close())
 
+	// Pre-proof rows are deleted: they could be burned with only the path.
+	r.Equal(0, secretCount(t, store, legacyID))
 	secret, err := store.Consume(ctx, legacyID, bytes.Repeat([]byte{1}, 32), now)
+	r.Nil(secret)
+	r.ErrorIs(err, errSecretUnavailable)
+
+	var schemaVersion int
+	r.NoError(store.db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&schemaVersion))
+	r.Equal(2, schemaVersion)
+}
+
+func TestStoreConsumeRejectsMissingVerifierWithoutDeleting(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	store := newTestStore(t)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	id := "nullverifiernote000000"
+	ciphertext := []byte("encrypted Jeff")
+	nonce := []byte("123456789012")
+	consumeVerifier := bytes.Repeat([]byte{1}, 32)
+
+	_, err := store.db.ExecContext(
+		ctx,
+		`INSERT INTO secrets (
+			id, ciphertext, nonce, consume_verifier, created_at_unix, expires_at_unix
+		) VALUES (?, ?, ?, NULL, ?, ?)`,
+		id,
+		ciphertext,
+		nonce,
+		now.Unix(),
+		now.Add(time.Hour).Unix(),
+	)
 	r.NoError(err)
-	r.Equal(ciphertext, secret.Ciphertext)
-	r.Equal(nonce, secret.Nonce)
+
+	secret, err := store.Consume(ctx, id, consumeVerifier, now)
+	r.Nil(secret)
+	r.ErrorIs(err, errSecretUnauthorized)
+	r.Equal(1, secretCount(t, store, id))
 }
 
 func newTestStore(t *testing.T) *store {
