@@ -541,7 +541,14 @@ func TestConsumeHandlerRejectsWrongVerifierWithoutDeletingSecret(t *testing.T) {
 	wrongRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/"+id+"/consume", bytes.NewBufferString(`{"consumeVerifier":"`+wrongVerifier+`"}`))
 	wrongResponse := httptest.NewRecorder()
 	app.ServeHTTP(wrongResponse, wrongRequest)
-	r.Equal(http.StatusForbidden, wrongResponse.Code)
+	r.Equal(http.StatusGone, wrongResponse.Code)
+	r.Contains(wrongResponse.Body.String(), errSecretUnavailable.Error())
+
+	missingRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/aaaaaaaaaaaaaaaaaaaaaa/consume", bytes.NewBufferString(`{"consumeVerifier":"`+wrongVerifier+`"}`))
+	missingResponse := httptest.NewRecorder()
+	app.ServeHTTP(missingResponse, missingRequest)
+	r.Equal(http.StatusGone, missingResponse.Code)
+	r.Equal(wrongResponse.Body.String(), missingResponse.Body.String())
 
 	rightRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/"+id+"/consume", bytes.NewBufferString(`{"consumeVerifier":"`+consumeVerifier+`"}`))
 	rightResponse := httptest.NewRecorder()

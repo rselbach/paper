@@ -31,7 +31,8 @@ go run .
 - The decryption key is stored in the URL fragment after `#`, which browsers do
   not send to the server.
 - The browser derives a consume proof from the fragment key, so path-only leaks
-  cannot burn a note.
+  cannot burn a note. Failed consume attempts return a uniform "unavailable"
+  response so path-only observers cannot tell live notes from missing ones.
 - SQLite stores only the random note id, ciphertext, nonce, consume proof, and
   expiry time.
 - Revealing a note uses a `POST` action and deletes the encrypted payload before

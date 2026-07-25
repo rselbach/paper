@@ -918,12 +918,12 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 	secret, err := s.store.Consume(r.Context(), id, consumeVerifier, time.Now())
 	if err != nil {
 		switch {
-		case errors.Is(err, errSecretUnavailable):
-			writeError(w, http.StatusGone, err.Error(), s.logger)
-		case errors.Is(err, errSecretExpired):
-			writeError(w, http.StatusGone, err.Error(), s.logger)
-		case errors.Is(err, errSecretUnauthorized):
-			writeError(w, http.StatusForbidden, err.Error(), s.logger)
+		case errors.Is(err, errSecretUnavailable),
+			errors.Is(err, errSecretExpired),
+			errors.Is(err, errSecretUnauthorized):
+			// Same status and body for missing, expired, and wrong proof so
+			// path-only observers cannot probe whether a note is still live.
+			writeError(w, http.StatusGone, errSecretUnavailable.Error(), s.logger)
 		default:
 			s.logger.Error("consume secret", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error", s.logger)
