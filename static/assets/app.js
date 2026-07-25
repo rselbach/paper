@@ -240,12 +240,10 @@ async function createSecret(event) {
     }
 
     const payload = await response.json();
-    // Prefer the browser origin + path so a poisoned API "url" cannot
-    // redirect the share link to an attacker host.
-    const path = typeof payload.path === "string" && payload.path.startsWith("/s/")
-      ? payload.path
-      : new URL(payload.url, window.location.origin).pathname;
-    const url = `${window.location.origin}${path}#${sealed.key}`;
+    // The API returns an absolute URL only when a public origin is configured,
+    // and a path otherwise, which resolves against this origin. Neither is
+    // built from the request Host header.
+    const url = `${new URL(payload.url, window.location.origin)}#${sealed.key}`;
     shareURL.value = url;
     setFileId(sealed.id);
     if (payload.expiresAt) {
