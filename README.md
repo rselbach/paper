@@ -30,13 +30,13 @@ go run .
 - Secrets are encrypted in the browser with Web Crypto AES-GCM.
 - The decryption key is stored in the URL fragment after `#`, which browsers do
   not send to the server.
-- The browser derives a consume proof from the fragment key, so path-only leaks
-  cannot burn a note. Failed consume attempts return a uniform "unavailable"
-  response, and creating a note with an id already in use answers exactly as a
-  fresh create unless the caller proves it holds the key, so path-only
-  observers cannot tell live notes from missing ones on either endpoint.
-  Upgrades drop any pre-proof rows that lacked a consume verifier.
-- SQLite stores only the random note id, ciphertext, nonce, consume proof, and
+- The browser derives separate create and consume proofs from the fragment key.
+  The note id commits to the create proof, so a path-only observer cannot submit
+  a valid creation request for that id. The consume proof prevents the same
+  observer from burning the note, and failed consume attempts return a uniform
+  "unavailable" response. Upgrades drop any pre-proof rows that lacked a
+  consume verifier.
+- SQLite stores only the note id commitment, ciphertext, nonce, consume proof, and
   expiry time.
 - Revealing a note uses a `POST` action and deletes the encrypted payload before
   returning it to the browser. This provides at-most-once access: a network or

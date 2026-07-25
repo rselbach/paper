@@ -120,6 +120,7 @@ type createSecretRequest struct {
 	ID              string `json:"id"`
 	Ciphertext      string `json:"ciphertext"`
 	Nonce           string `json:"nonce"`
+	CreateVerifier  string `json:"createVerifier"`
 	ConsumeVerifier string `json:"consumeVerifier"`
 }
 
@@ -980,7 +981,27 @@ func (s *server) validateCreateRequest(request createSecretRequest) ([]byte, []b
 		return nil, nil, nil, fmt.Errorf("consumeVerifier must be 32 bytes, got %d", len(consumeVerifier))
 	}
 
+	createVerifier, err := base64.RawURLEncoding.DecodeString(request.CreateVerifier)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("createVerifier must be base64url: %w", err)
+	}
+	if len(createVerifier) != 32 {
+		return nil, nil, nil, fmt.Errorf("createVerifier must be 32 bytes, got %d", len(createVerifier))
+	}
+	if request.ID != secretIDForCreateVerifier(createVerifier) {
+		return nil, nil, nil, errors.New("id does not match createVerifier")
+	}
+
 	return ciphertext, nonce, consumeVerifier, nil
+}
+
+func secretIDForCreateVerifier(createVerifier []byte) string {
+	const context = "paper id v1\x00"
+	input := make([]byte, len(context)+len(createVerifier))
+	copy(input, context)
+	copy(input[len(context):], createVerifier)
+	sum := sha256.Sum256(input)
+	return base64.RawURLEncoding.EncodeToString(sum[:16])
 }
 
 func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {

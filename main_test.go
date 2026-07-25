@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -283,13 +282,12 @@ func TestCreateAndConsumeHandlers(t *testing.T) {
 	r := require.New(t)
 	app := newTestServer(t)
 
-	id := "cccccccccccccccccccccc"
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted Human Being mascot"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
-	body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`)
+	id, body := testCreateRequestBody(t, ciphertext, nonce, consumeVerifier, bytes.Repeat([]byte{6}, 32))
 
-	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Host = "paper.test"
 	response := httptest.NewRecorder()
@@ -427,12 +425,12 @@ func TestCreateHandlerHandlesDuplicateIDWithoutLeakingLiveness(t *testing.T) {
 	r := require.New(t)
 	app := newTestServer(t)
 
-	id := "mmmmmmmmmmmmmmmmmmmmmm"
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted first payload"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{11}, 32))
 	otherVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{18}, 32))
-	body := `{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`
+	createVerifier := bytes.Repeat([]byte{12}, 32)
+	id, body := testCreateRequestBody(t, ciphertext, nonce, consumeVerifier, createVerifier)
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	firstResponse := httptest.NewRecorder()
@@ -446,25 +444,33 @@ func TestCreateHandlerHandlesDuplicateIDWithoutLeakingLiveness(t *testing.T) {
 	r.Equal(http.StatusCreated, retryResponse.Code)
 	r.Equal(firstResponse.Body.String(), retryResponse.Body.String())
 
-	// An observer holding only the path gets the same answer it would get for
-	// an id that was never used, so it learns nothing about the note.
-	probeBody := `{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + otherVerifier + `"}`
-	probeRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(probeBody))
+	// An observer holding only the path cannot construct a create verifier for
+	// either a live id or an unused id, so both requests fail before storage.
+	otherCreateVerifier := bytes.Repeat([]byte{13}, 32)
+	probeRequestBody := createSecretRequest{
+		ID:              id,
+		Ciphertext:      ciphertext,
+		Nonce:           nonce,
+		CreateVerifier:  base64.RawURLEncoding.EncodeToString(otherCreateVerifier),
+		ConsumeVerifier: otherVerifier,
+	}
+	probeBody, err := json.Marshal(probeRequestBody)
+	r.NoError(err)
+	probeRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewReader(probeBody))
 	probeResponse := httptest.NewRecorder()
 	app.ServeHTTP(probeResponse, probeRequest)
 
-	freshBody := `{"id":"unusedprobetargetnote0","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + otherVerifier + `"}`
-	freshRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(freshBody))
+	probeRequestBody.ID = secretIDForCreateVerifier(bytes.Repeat([]byte{14}, 32))
+	freshBody, err := json.Marshal(probeRequestBody)
+	r.NoError(err)
+	freshRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewReader(freshBody))
 	freshResponse := httptest.NewRecorder()
 	app.ServeHTTP(freshResponse, freshRequest)
 
-	r.Equal(http.StatusCreated, probeResponse.Code)
+	r.Equal(http.StatusBadRequest, probeResponse.Code)
 	r.Equal(freshResponse.Code, probeResponse.Code)
-	var probed, fresh createSecretResponse
-	r.NoError(json.Unmarshal(probeResponse.Body.Bytes(), &probed))
-	r.NoError(json.Unmarshal(freshResponse.Body.Bytes(), &fresh))
-	r.Equal("/s/"+id, probed.Path)
-	r.Equal(fresh.ExpiresAt, probed.ExpiresAt)
+	r.Equal(freshResponse.Body.String(), probeResponse.Body.String())
+	r.Contains(probeResponse.Body.String(), "id does not match createVerifier")
 
 	// The probe must not have replaced the stored note.
 	consumeRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/"+id+"/consume", bytes.NewBufferString(`{"consumeVerifier":"`+consumeVerifier+`"}`))
@@ -529,15 +535,15 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 	app := server.routes()
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{14}, 32))
 
-	firstBody := bytes.NewBufferString(`{"id":"ratelimitfirstnote0000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", firstBody)
+	_, firstBody := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{30}, 32))
+	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(firstBody))
 	firstRequest.RemoteAddr = "203.0.113.10:50000"
 	firstResponse := httptest.NewRecorder()
 	app.ServeHTTP(firstResponse, firstRequest)
 	r.Equal(http.StatusCreated, firstResponse.Code)
 
-	secondBody := bytes.NewBufferString(`{"id":"ratelimitsecondnote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", secondBody)
+	_, secondBody := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{31}, 32))
+	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(secondBody))
 	secondRequest.RemoteAddr = "203.0.113.10:50001"
 	secondResponse := httptest.NewRecorder()
 	app.ServeHTTP(secondResponse, secondRequest)
@@ -545,8 +551,8 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 	r.Equal("60", secondResponse.Header().Get("Retry-After"))
 
 	// A different client still has its own budget.
-	otherBody := bytes.NewBufferString(`{"id":"ratelimitotherclient00","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	otherRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", otherBody)
+	_, otherBody := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{32}, 32))
+	otherRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(otherBody))
 	otherRequest.RemoteAddr = "203.0.113.20:50002"
 	otherResponse := httptest.NewRecorder()
 	app.ServeHTTP(otherResponse, otherRequest)
@@ -555,16 +561,16 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 	// A loopback peer is the local reverse proxy, which appends the address
 	// it observed. The rightmost entry identifies the client; the values to
 	// its left came from the client and are ignored.
-	proxyBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	proxyRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxyBody)
+	_, proxyBody := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{33}, 32))
+	proxyRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(proxyBody))
 	proxyRequest.RemoteAddr = "127.0.0.1:40000"
 	proxyRequest.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.7")
 	proxyResponse := httptest.NewRecorder()
 	app.ServeHTTP(proxyResponse, proxyRequest)
 	r.Equal(http.StatusCreated, proxyResponse.Code)
 
-	proxySecondBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote001","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	proxySecondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxySecondBody)
+	_, proxySecondBody := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{34}, 32))
+	proxySecondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(proxySecondBody))
 	proxySecondRequest.RemoteAddr = "127.0.0.1:40001"
 	proxySecondRequest.Header.Set("X-Forwarded-For", "192.0.2.55, 198.51.100.7")
 	proxySecondResponse := httptest.NewRecorder()
@@ -585,9 +591,9 @@ func TestCreateHandlerIgnoresForwardedHeadersFromDirectClients(t *testing.T) {
 	// escape its own bucket.
 	codes := make([]int, 0, 3)
 	for index, forwarded := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
-		id := fmt.Sprintf("spoofedforwardednote%02d", index)
-		body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-		request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+		createVerifier := bytes.Repeat([]byte{byte(40 + index)}, 32)
+		_, body := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, createVerifier)
+		request := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 		request.RemoteAddr = "203.0.113.30:50000"
 		request.Header.Set("X-Forwarded-For", forwarded)
 		request.Header.Set("X-Real-IP", forwarded)
@@ -693,8 +699,8 @@ func TestCreateHandlerRejectsRequestsAtStorageCapacity(t *testing.T) {
 	r.NoError(err)
 	app := server.routes()
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{15}, 32))
-	body := bytes.NewBufferString(`{"id":"storagecapacitynote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
-	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	_, body := testCreateRequestBody(t, "YWJj", "MTIzNDU2Nzg5MDEy", consumeVerifier, bytes.Repeat([]byte{35}, 32))
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	response := httptest.NewRecorder()
 	app.ServeHTTP(response, request)
 
@@ -706,13 +712,12 @@ func TestCreateHandlerUsesConfiguredPublicOrigin(t *testing.T) {
 	r := require.New(t)
 	app := newTestServerWithOrigin(t, "https://paper.example")
 
-	id := "iiiiiiiiiiiiiiiiiiiiii"
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted Pierce"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-	body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`)
+	id, body := testCreateRequestBody(t, ciphertext, nonce, consumeVerifier, bytes.Repeat([]byte{36}, 32))
 
-	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	request.Host = "attacker.example"
 	request.Header.Set("X-Forwarded-Proto", "http")
 	response := httptest.NewRecorder()
@@ -730,13 +735,12 @@ func TestCreateHandlerIgnoresRequestHostWithoutPublicOrigin(t *testing.T) {
 	r := require.New(t)
 	app := newTestServerWithOrigin(t, "")
 
-	id := "hostheaderignorednote00"
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted Britta"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{16}, 32))
-	body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`)
+	id, body := testCreateRequestBody(t, ciphertext, nonce, consumeVerifier, bytes.Repeat([]byte{37}, 32))
 
-	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
 	request.Host = "evil.example"
 	response := httptest.NewRecorder()
 	app.ServeHTTP(response, request)
@@ -754,14 +758,13 @@ func TestConsumeHandlerRejectsWrongVerifierWithoutDeletingSecret(t *testing.T) {
 	r := require.New(t)
 	app := newTestServer(t)
 
-	id := "ffffffffffffffffffffff"
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted Annie"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
 	wrongVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	createBody := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`)
+	id, createBody := testCreateRequestBody(t, ciphertext, nonce, consumeVerifier, bytes.Repeat([]byte{38}, 32))
 
-	createRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", createBody)
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(createBody))
 	createResponse := httptest.NewRecorder()
 	app.ServeHTTP(createResponse, createRequest)
 	r.Equal(http.StatusCreated, createResponse.Code)
@@ -1218,6 +1221,20 @@ func secretCount(t *testing.T, store *store, id string) int {
 	var count int
 	require.NoError(t, store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM secrets WHERE id = ?", id).Scan(&count))
 	return count
+}
+
+func testCreateRequestBody(t *testing.T, ciphertext, nonce, consumeVerifier string, createVerifier []byte) (string, string) {
+	t.Helper()
+	request := createSecretRequest{
+		ID:              secretIDForCreateVerifier(createVerifier),
+		Ciphertext:      ciphertext,
+		Nonce:           nonce,
+		CreateVerifier:  base64.RawURLEncoding.EncodeToString(createVerifier),
+		ConsumeVerifier: consumeVerifier,
+	}
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	return request.ID, string(body)
 }
 
 func newTestServer(t *testing.T) http.Handler {

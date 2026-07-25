@@ -72,18 +72,31 @@ function base64URLToBytes(value) {
   return bytes;
 }
 
-function randomToken(byteLength) {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return bytesToBase64URL(bytes);
-}
-
 async function consumeVerifier(id, rawKey) {
   const context = encoder.encode(`paper consume v1\0${id}\0`);
   const input = new Uint8Array(context.length + rawKey.length);
   input.set(context);
   input.set(rawKey, context.length);
   return bytesToBase64URL(new Uint8Array(await crypto.subtle.digest("SHA-256", input)));
+}
+
+async function createIdentity(rawKey) {
+  const verifierContext = encoder.encode("paper create verifier v1\0");
+  const verifierInput = new Uint8Array(verifierContext.length + rawKey.length);
+  verifierInput.set(verifierContext);
+  verifierInput.set(rawKey, verifierContext.length);
+  const verifier = new Uint8Array(await crypto.subtle.digest("SHA-256", verifierInput));
+
+  const idContext = encoder.encode("paper id v1\0");
+  const idInput = new Uint8Array(idContext.length + verifier.length);
+  idInput.set(idContext);
+  idInput.set(verifier, idContext.length);
+  const idDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", idInput));
+
+  return {
+    id: bytesToBase64URL(idDigest.subarray(0, 16)),
+    verifier: bytesToBase64URL(verifier),
+  };
 }
 
 async function readError(response) {
@@ -204,14 +217,15 @@ async function sealSecret(secret) {
     plaintext,
   ));
 
-  const id = randomToken(16);
+  const create = await createIdentity(rawKey);
 
   return {
-    id,
+    id: create.id,
     key: bytesToBase64URL(rawKey),
     ciphertext: bytesToBase64URL(ciphertext),
     nonce: bytesToBase64URL(nonce),
-    consumeVerifier: await consumeVerifier(id, rawKey),
+    createVerifier: create.verifier,
+    consumeVerifier: await consumeVerifier(create.id, rawKey),
   };
 }
 
@@ -231,6 +245,7 @@ async function createSecret(event) {
         id: sealed.id,
         ciphertext: sealed.ciphertext,
         nonce: sealed.nonce,
+        createVerifier: sealed.createVerifier,
         consumeVerifier: sealed.consumeVerifier,
       }),
     });
