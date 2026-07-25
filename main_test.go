@@ -676,10 +676,21 @@ func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 	r.Contains(string(srv.index), `Paper abc123`)
 	r.Contains(string(srv.index), "works exactly once")
 	r.Contains(string(srv.index), "secret may still be destroyed")
+	r.Contains(string(srv.index), "Expires after 1 hour if unopened")
 	r.NotContains(string(srv.index), "__PAPER_MAX_BYTES__")
 	r.NotContains(string(srv.index), "__PAPER_VERSION__")
+	r.NotContains(string(srv.index), "__PAPER_SECRET_TTL_LABEL__")
 	r.NotContains(string(srv.index), "__PAPER_STYLE_URL__")
 	r.NotContains(string(srv.index), "__PAPER_APP_URL__")
+}
+
+func TestFormatSecretTTLLabel(t *testing.T) {
+	r := require.New(t)
+	r.Equal("1 hour", formatSecretTTLLabel(time.Hour))
+	r.Equal("12 hours", formatSecretTTLLabel(12*time.Hour))
+	r.Equal("1 day", formatSecretTTLLabel(24*time.Hour))
+	r.Equal("7 days", formatSecretTTLLabel(7*24*time.Hour))
+	r.Equal("3 days", formatSecretTTLLabel(72*time.Hour))
 }
 
 func TestNormalizePublicOrigin(t *testing.T) {

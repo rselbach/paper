@@ -722,6 +722,7 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 
 	index = bytes.ReplaceAll(index, []byte("__PAPER_MAX_BYTES__"), []byte(strconv.Itoa(maxSecretBytes)))
 	index = bytes.ReplaceAll(index, []byte("__PAPER_VERSION__"), []byte(html.EscapeString(version)))
+	index = bytes.ReplaceAll(index, []byte("__PAPER_SECRET_TTL_LABEL__"), []byte(html.EscapeString(formatSecretTTLLabel(secretTTL))))
 	index = bytes.ReplaceAll(index, []byte("__PAPER_STYLE_URL__"), []byte(style.urlPath))
 	index = bytes.ReplaceAll(index, []byte("__PAPER_APP_URL__"), []byte(app.urlPath))
 
@@ -985,6 +986,24 @@ func (s *server) shareURL(path string) string {
 		return path
 	}
 	return s.publicOrigin + path
+}
+
+func formatSecretTTLLabel(ttl time.Duration) string {
+	hours := int(ttl / time.Hour)
+	if hours <= 0 {
+		return "a short time"
+	}
+	if hours%24 == 0 {
+		days := hours / 24
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	if hours == 1 {
+		return "1 hour"
+	}
+	return fmt.Sprintf("%d hours", hours)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any, logger *slog.Logger) {
