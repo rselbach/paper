@@ -21,6 +21,11 @@ readonly -a SSH_OPTIONS=(
   -o BatchMode=yes
   -o ConnectTimeout=10
 )
+readonly PUBLIC_CHECK_ATTEMPTS=5
+readonly PUBLIC_CHECK_DELAY=3
+# curl exits 22 when --fail sees an HTTP error, which means the endpoint
+# answered. Any other failure means we never got an answer at all.
+readonly CURL_HTTP_ERROR=22
 
 usage() {
   printf 'Usage: %s {check|deploy}\n' "${0##*/}" >&2
@@ -38,6 +43,17 @@ run_remote() {
   fi
 }
 
+# run_remote_status runs a remote command and propagates its exit status
+# unchanged, so callers can tell one kind of failure from another.
+run_remote_status() {
+  local command
+  command="${1}"
+
+  # The command is assembled locally from script constants.
+  # shellcheck disable=SC2029
+  ssh "${SSH_OPTIONS[@]}" "${SSH_TARGET}" "${command}"
+}
+
 check_local_server() {
   printf 'Service: '
   run_remote "systemctl is-active ${SERVICE}"
@@ -47,10 +63,36 @@ check_local_server() {
     "curl --fail --silent --show-error ${LOCAL_HEALTH_URL}"
 }
 
+# check_public_server returns 0 when the public endpoint is healthy, 1 when it
+# answers with an error status, and 2 when it could not be reached. Only an
+# answered error says anything about the deployed service.
 check_public_server() {
-  printf 'Public health: '
-  run_remote \
-    "curl --fail --silent --show-error ${PUBLIC_HEALTH_URL}"
+  local attempt body status
+  local last_status=2
+  for ((attempt = 1; attempt <= PUBLIC_CHECK_ATTEMPTS; attempt++)); do
+    status=0
+    body="$(run_remote_status \
+      "curl --fail --silent --show-error ${PUBLIC_HEALTH_URL}")" || status=$?
+    if ((status == 0)); then
+      printf 'Public health: %s\n' "${body}"
+      return 0
+    fi
+    if ((status == CURL_HTTP_ERROR)); then
+      last_status=1
+    else
+      last_status=2
+    fi
+    if ((attempt < PUBLIC_CHECK_ATTEMPTS)); then
+      sleep "${PUBLIC_CHECK_DELAY}"
+    fi
+  done
+
+  if ((last_status == 1)); then
+    printf 'error: public health endpoint answered with an error\n' >&2
+    return 1
+  fi
+  printf 'error: could not reach the public health endpoint\n' >&2
+  return 2
 }
 
 check_server() {
@@ -197,27 +239,46 @@ verify_local_version() {
   return 1
 }
 
+# verify_public_version returns 0 when the public page reports the deployed
+# version, 1 when it reports a different one, and 2 when it could not be read.
+# The fetch runs on the server so a fault on this machine cannot be mistaken
+# for a bad deployment.
 verify_public_version() {
   local version
   version="${1}"
 
-  local index
-  if ! index="$(curl --fail --silent --show-error \
-    "${PUBLIC_INDEX_URL}")"; then
-    printf 'error: could not read the public Paper page\n' >&2
-    return 1
-  fi
-
   local marker
   marker="<meta name=\"paper-version\" content=\"${version}\">"
-  if [[ "${index}" == *"${marker}"* ]]; then
-    printf 'Public version: %s\n' "${version}"
-    return 0
-  fi
 
-  printf 'error: public page does not report version %s\n' \
-    "${version}" >&2
-  return 1
+  local attempt index status
+  local last_status=2
+  for ((attempt = 1; attempt <= PUBLIC_CHECK_ATTEMPTS; attempt++)); do
+    status=0
+    index="$(run_remote_status \
+      "curl --fail --silent --show-error ${PUBLIC_INDEX_URL}")" || status=$?
+    if ((status == 0)); then
+      if [[ "${index}" == *"${marker}"* ]]; then
+        printf 'Public version: %s\n' "${version}"
+        return 0
+      fi
+      last_status=1
+    elif ((status == CURL_HTTP_ERROR)); then
+      last_status=1
+    else
+      last_status=2
+    fi
+    if ((attempt < PUBLIC_CHECK_ATTEMPTS)); then
+      sleep "${PUBLIC_CHECK_DELAY}"
+    fi
+  done
+
+  if ((last_status == 1)); then
+    printf 'error: public page does not report version %s\n' \
+      "${version}" >&2
+    return 1
+  fi
+  printf 'error: could not read the public Paper page\n' >&2
+  return 2
 }
 
 rollback_server() {
@@ -254,6 +315,12 @@ rollback_server() {
   if ! check_local_server; then
     printf 'error: rolled-back service is unhealthy\n' >&2
     return 1
+  fi
+}
+
+rollback_or_warn() {
+  if ! rollback_server; then
+    printf 'error: rollback failed; the server needs manual attention\n' >&2
   fi
 }
 
@@ -298,18 +365,39 @@ deploy_server() {
   verify_upload
   backup_server
   install_server "${version}"
-  if ! check_public_server; then
+
+  # The install is already verified healthy and running the new version on
+  # the box, so roll back only when the public endpoint answers and answers
+  # wrongly. An endpoint we cannot reach is not evidence against the build.
+  local status
+  status=0
+  check_public_server || status=$?
+  if ((status == 1)); then
     printf '%s\n' \
       'error: local deployment is healthy; public health failed' >&2
-    rollback_server
+    rollback_or_warn
     return 1
   fi
-  if ! verify_public_version "${version}"; then
+  if ((status != 0)); then
+    printf '%s\n' \
+      'error: public endpoint unreachable; leaving the new binary in place' >&2
+    return 1
+  fi
+
+  status=0
+  verify_public_version "${version}" || status=$?
+  if ((status == 1)); then
     printf '%s\n' \
       'error: local deployment is healthy; public version failed' >&2
-    rollback_server
+    rollback_or_warn
     return 1
   fi
+  if ((status != 0)); then
+    printf '%s\n' \
+      'error: public page unreadable; leaving the new binary in place' >&2
+    return 1
+  fi
+
   printf 'Deployed Paper %s.\n' "${version}"
 }
 

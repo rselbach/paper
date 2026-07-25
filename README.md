@@ -78,4 +78,6 @@ The script identifies clean builds by their commit SHA and dirty builds as
 checksum, backs up the current binary and database, installs the new binary,
 and verifies both the local service and public endpoint. It rolls back the
 binary automatically if the restarted local service is unhealthy, or if the
-public health check or version marker fails after install.
+public endpoint answers but reports an error or the wrong version. Both public
+checks run on the server and are retried; an endpoint that cannot be reached
+at all leaves the new binary in place, since that says nothing about the build.
