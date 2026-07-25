@@ -301,11 +301,13 @@ deploy_server() {
   if ! check_public_server; then
     printf '%s\n' \
       'error: local deployment is healthy; public health failed' >&2
+    rollback_server
     return 1
   fi
   if ! verify_public_version "${version}"; then
     printf '%s\n' \
       'error: local deployment is healthy; public version failed' >&2
+    rollback_server
     return 1
   fi
   printf 'Deployed Paper %s.\n' "${version}"

@@ -73,4 +73,5 @@ The script identifies clean builds by their commit SHA and dirty builds as
 `dev`. It runs the checks, cross-compiles for Linux/amd64, verifies the upload
 checksum, backs up the current binary and database, installs the new binary,
 and verifies both the local service and public endpoint. It rolls back the
-binary automatically if the restarted local service is unhealthy.
+binary automatically if the restarted local service is unhealthy, or if the
+public health check or version marker fails after install.
