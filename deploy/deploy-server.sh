@@ -23,6 +23,8 @@ readonly -a SSH_OPTIONS=(
 )
 readonly PUBLIC_CHECK_ATTEMPTS=5
 readonly PUBLIC_CHECK_DELAY=3
+readonly PUBLIC_CONNECT_TIMEOUT_SECONDS=5
+readonly PUBLIC_REQUEST_TIMEOUT_SECONDS=10
 # curl exits 22 when --fail sees an HTTP error, which means the endpoint
 # answered. Any other failure means we never got an answer at all.
 readonly CURL_HTTP_ERROR=22
@@ -68,26 +70,27 @@ check_local_server() {
 # answered error says anything about the deployed service.
 check_public_server() {
   local attempt body status
-  local last_status=2
+  local answered=false
   for ((attempt = 1; attempt <= PUBLIC_CHECK_ATTEMPTS; attempt++)); do
     status=0
     body="$(run_remote_status \
-      "curl --fail --silent --show-error ${PUBLIC_HEALTH_URL}")" || status=$?
+      "curl --fail --silent --show-error \
+--connect-timeout ${PUBLIC_CONNECT_TIMEOUT_SECONDS} \
+--max-time ${PUBLIC_REQUEST_TIMEOUT_SECONDS} \
+${PUBLIC_HEALTH_URL}")" || status=$?
     if ((status == 0)); then
       printf 'Public health: %s\n' "${body}"
       return 0
     fi
     if ((status == CURL_HTTP_ERROR)); then
-      last_status=1
-    else
-      last_status=2
+      answered=true
     fi
     if ((attempt < PUBLIC_CHECK_ATTEMPTS)); then
       sleep "${PUBLIC_CHECK_DELAY}"
     fi
   done
 
-  if ((last_status == 1)); then
+  if [[ "${answered}" == true ]]; then
     printf 'error: public health endpoint answered with an error\n' >&2
     return 1
   fi
@@ -251,28 +254,29 @@ verify_public_version() {
   marker="<meta name=\"paper-version\" content=\"${version}\">"
 
   local attempt index status
-  local last_status=2
+  local answered=false
   for ((attempt = 1; attempt <= PUBLIC_CHECK_ATTEMPTS; attempt++)); do
     status=0
     index="$(run_remote_status \
-      "curl --fail --silent --show-error ${PUBLIC_INDEX_URL}")" || status=$?
+      "curl --fail --silent --show-error \
+--connect-timeout ${PUBLIC_CONNECT_TIMEOUT_SECONDS} \
+--max-time ${PUBLIC_REQUEST_TIMEOUT_SECONDS} \
+${PUBLIC_INDEX_URL}")" || status=$?
     if ((status == 0)); then
       if [[ "${index}" == *"${marker}"* ]]; then
         printf 'Public version: %s\n' "${version}"
         return 0
       fi
-      last_status=1
+      answered=true
     elif ((status == CURL_HTTP_ERROR)); then
-      last_status=1
-    else
-      last_status=2
+      answered=true
     fi
     if ((attempt < PUBLIC_CHECK_ATTEMPTS)); then
       sleep "${PUBLIC_CHECK_DELAY}"
     fi
   done
 
-  if ((last_status == 1)); then
+  if [[ "${answered}" == true ]]; then
     printf 'error: public page does not report version %s\n' \
       "${version}" >&2
     return 1
@@ -432,4 +436,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
