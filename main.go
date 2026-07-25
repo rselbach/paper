@@ -588,14 +588,22 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 		return time.Time{}, fmt.Errorf("begin create transaction: %w", err)
 	}
 
+	// Drop expired rows before measuring. Excluding them from the count
+	// instead would let them sit on disk until the cleanup ticker ran, so the
+	// budgets would bound live ciphertext but not the size of the database.
+	if _, err := tx.ExecContext(
+		ctx,
+		"DELETE FROM secrets WHERE expires_at_unix <= ?",
+		now.UTC().Unix(),
+	); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("delete expired secrets: %w", err))
+	}
+
 	var storedBytes int64
 	var storedItems int
 	if err := tx.QueryRowContext(
 		ctx,
-		`SELECT COALESCE(SUM(length(ciphertext)), 0), COUNT(*)
-		 FROM secrets
-		 WHERE expires_at_unix > ?`,
-		now.UTC().Unix(),
+		"SELECT COALESCE(SUM(length(ciphertext)), 0), COUNT(*) FROM secrets",
 	).Scan(&storedBytes, &storedItems); err != nil {
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read secret storage usage: %w", err))
 	}

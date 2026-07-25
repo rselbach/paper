@@ -41,10 +41,12 @@ go run .
 - Revealing a note uses a `POST` action and deletes the encrypted payload before
   returning it to the browser. This provides at-most-once access: a network or
   decryption failure after deletion burns the note without revealing it.
-- Expired notes are deleted at startup, opportunistically on reveal, and by a
-  periodic cleanup ticker.
+- Expired notes are deleted at startup, opportunistically on reveal and on
+  creation, and by a periodic cleanup ticker.
 - Creation is rate limited, and stored ciphertext is bounded by byte and item
-  budgets so anonymous traffic cannot exhaust the host filesystem.
+  budgets so anonymous traffic cannot exhaust the host filesystem. Creation
+  purges expired rows before measuring, so the budgets bound the database and
+  not just its unexpired contents.
 - Absolute share URLs come only from `PAPER_PUBLIC_ORIGIN`. Without it the
   API returns a path and the browser builds the link from its own origin,
   so request `Host` headers cannot mint attacker-controlled URLs.

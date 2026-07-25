@@ -248,6 +248,10 @@ func TestStoreCapacityIgnoresExpiredSecrets(t *testing.T) {
 		time.Hour,
 	)
 	r.NoError(err)
+
+	// The expired row was purged rather than merely discounted, so the budget
+	// still bounds what is actually on disk.
+	r.Equal(0, secretCount(t, store, "expiredfillsquota000000"))
 }
 
 func TestExpiredSecretCleanerDeletesExpiredSecrets(t *testing.T) {
