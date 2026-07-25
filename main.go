@@ -842,7 +842,7 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 
 	path := "/s/" + request.ID
 	writeJSON(w, http.StatusCreated, createSecretResponse{
-		URL:       s.origin(r) + path,
+		URL:       s.shareURL(path),
 		Path:      path,
 		ExpiresAt: expiresAt,
 	}, s.logger)
@@ -953,16 +953,14 @@ func (s *server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func (s *server) origin(r *http.Request) string {
-	if s.publicOrigin != "" {
-		return s.publicOrigin
+// shareURL returns an absolute URL only from the configured public origin.
+// When that origin is unset, it returns the path alone so request Host
+// headers cannot mint attacker-controlled share links.
+func (s *server) shareURL(path string) string {
+	if s.publicOrigin == "" {
+		return path
 	}
-
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
+	return s.publicOrigin + path
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any, logger *slog.Logger) {

@@ -41,8 +41,9 @@ go run .
   periodic cleanup ticker.
 - Creation is rate limited, and stored ciphertext is bounded by byte and item
   budgets so anonymous traffic cannot exhaust the host filesystem.
-- In production, set `PAPER_PUBLIC_ORIGIN` so generated share links use a
-  trusted configured origin instead of request headers.
+- Absolute share URLs come only from `PAPER_PUBLIC_ORIGIN`. Without it the
+  API returns a path and the browser builds the link from its own origin,
+  so request `Host` headers cannot mint attacker-controlled URLs.
 - Security headers set `no-store`, CSP, `no-referrer`, and related browser
   hardening defaults.
 

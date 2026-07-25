@@ -263,7 +263,7 @@ func TestCreateAndConsumeHandlers(t *testing.T) {
 
 	var created createSecretResponse
 	r.NoError(json.Unmarshal(response.Body.Bytes(), &created))
-	r.Equal("http://paper.test/s/"+id, created.URL)
+	r.Equal("/s/"+id, created.URL)
 	r.Equal("/s/"+id, created.Path)
 
 	consumeBody := bytes.NewBufferString(`{"consumeVerifier":"` + consumeVerifier + `"}`)
@@ -496,6 +496,30 @@ func TestCreateHandlerUsesConfiguredPublicOrigin(t *testing.T) {
 	r.NoError(json.Unmarshal(response.Body.Bytes(), &created))
 	r.Equal("https://paper.example/s/"+id, created.URL)
 	r.Equal("/s/"+id, created.Path)
+}
+
+func TestCreateHandlerIgnoresRequestHostWithoutPublicOrigin(t *testing.T) {
+	r := require.New(t)
+	app := newTestServerWithOrigin(t, "")
+
+	id := "hostheaderignorednote00"
+	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted Britta"))
+	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{16}, 32))
+	body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	request.Host = "evil.example"
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+
+	r.Equal(http.StatusCreated, response.Code)
+
+	var created createSecretResponse
+	r.NoError(json.Unmarshal(response.Body.Bytes(), &created))
+	r.Equal("/s/"+id, created.URL)
+	r.Equal("/s/"+id, created.Path)
+	r.NotContains(response.Body.String(), "evil.example")
 }
 
 func TestConsumeHandlerRejectsWrongVerifierWithoutDeletingSecret(t *testing.T) {
