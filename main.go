@@ -15,6 +15,7 @@ import (
 	"html"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -99,12 +100,18 @@ type fingerprintedAsset struct {
 	urlPath string
 }
 
-type fixedWindowLimiter struct {
-	mu          sync.Mutex
-	limit       int
-	window      time.Duration
+type clientWindow struct {
 	windowStart time.Time
 	count       int
+}
+
+// fixedWindowLimiter rate-limits each client key independently so one
+// source cannot exhaust the budget for everyone else.
+type fixedWindowLimiter struct {
+	mu      sync.Mutex
+	limit   int
+	window  time.Duration
+	clients map[string]*clientWindow
 }
 
 type createSecretRequest struct {
@@ -326,19 +333,52 @@ func getenv(key string, fallback string) string {
 	return value
 }
 
-func (l *fixedWindowLimiter) Allow(now time.Time) bool {
+func (l *fixedWindowLimiter) Allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.windowStart.IsZero() || now.Before(l.windowStart) || now.Sub(l.windowStart) >= l.window {
-		l.windowStart = now
-		l.count = 0
+	if l.clients == nil {
+		l.clients = make(map[string]*clientWindow)
 	}
-	if l.count >= l.limit {
+
+	// Drop expired windows so the map cannot grow without bound.
+	for client, state := range l.clients {
+		if now.Before(state.windowStart) || now.Sub(state.windowStart) >= l.window {
+			delete(l.clients, client)
+		}
+	}
+
+	state := l.clients[key]
+	if state == nil {
+		state = &clientWindow{windowStart: now}
+		l.clients[key] = state
+	}
+	if now.Before(state.windowStart) || now.Sub(state.windowStart) >= l.window {
+		state.windowStart = now
+		state.count = 0
+	}
+	if state.count >= l.limit {
 		return false
 	}
-	l.count++
+	state.count++
 	return true
+}
+
+func clientKey(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if ip := strings.TrimSpace(parts[0]); ip != "" {
+			return ip
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func openStore(ctx context.Context, path string, maxStoredBytes int64, maxStoredItems int) (*store, error) {
@@ -674,8 +714,9 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 		secretTTL:      secretTTL,
 		maxSecretBytes: maxSecretBytes,
 		createLimiter: &fixedWindowLimiter{
-			limit:  createRate,
-			window: time.Minute,
+			limit:   createRate,
+			window:  time.Minute,
+			clients: make(map[string]*clientWindow),
 		},
 	}, nil
 }
@@ -756,7 +797,7 @@ func (s *server) writeHTML(w http.ResponseWriter) {
 }
 
 func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
-	if !s.createLimiter.Allow(time.Now()) {
+	if !s.createLimiter.Allow(clientKey(r), time.Now()) {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "secret creation rate limit exceeded", s.logger)
 		return

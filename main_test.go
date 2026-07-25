@@ -418,16 +418,43 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 
 	firstBody := bytes.NewBufferString(`{"id":"ratelimitfirstnote0000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
 	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", firstBody)
+	firstRequest.RemoteAddr = "203.0.113.10:50000"
 	firstResponse := httptest.NewRecorder()
 	app.ServeHTTP(firstResponse, firstRequest)
 	r.Equal(http.StatusCreated, firstResponse.Code)
 
 	secondBody := bytes.NewBufferString(`{"id":"ratelimitsecondnote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
 	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", secondBody)
+	secondRequest.RemoteAddr = "203.0.113.10:50001"
 	secondResponse := httptest.NewRecorder()
 	app.ServeHTTP(secondResponse, secondRequest)
 	r.Equal(http.StatusTooManyRequests, secondResponse.Code)
 	r.Equal("60", secondResponse.Header().Get("Retry-After"))
+
+	// A different client still has its own budget.
+	otherBody := bytes.NewBufferString(`{"id":"ratelimitotherclient00","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	otherRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", otherBody)
+	otherRequest.RemoteAddr = "203.0.113.20:50002"
+	otherResponse := httptest.NewRecorder()
+	app.ServeHTTP(otherResponse, otherRequest)
+	r.Equal(http.StatusCreated, otherResponse.Code)
+
+	// X-Forwarded-For identifies clients behind a reverse proxy.
+	proxyBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	proxyRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxyBody)
+	proxyRequest.RemoteAddr = "127.0.0.1:40000"
+	proxyRequest.Header.Set("X-Forwarded-For", "198.51.100.7, 127.0.0.1")
+	proxyResponse := httptest.NewRecorder()
+	app.ServeHTTP(proxyResponse, proxyRequest)
+	r.Equal(http.StatusCreated, proxyResponse.Code)
+
+	proxySecondBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote001","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+	proxySecondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxySecondBody)
+	proxySecondRequest.RemoteAddr = "127.0.0.1:40001"
+	proxySecondRequest.Header.Set("X-Forwarded-For", "198.51.100.7")
+	proxySecondResponse := httptest.NewRecorder()
+	app.ServeHTTP(proxySecondResponse, proxySecondRequest)
+	r.Equal(http.StatusTooManyRequests, proxySecondResponse.Code)
 }
 
 func TestCreateHandlerRejectsRequestsAtStorageCapacity(t *testing.T) {
