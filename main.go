@@ -93,6 +93,7 @@ type server struct {
 	secretTTL           time.Duration
 	maxSecretBytes      int
 	createLimiter       *fixedWindowLimiter
+	consumeLimiter      *fixedWindowLimiter
 }
 
 type fingerprintedAsset struct {
@@ -623,13 +624,38 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read inserted row count: %w", err))
 	}
 	if rowsAffected == 0 {
-		return time.Time{}, rollbackWithError(tx, errSecretExists)
+		return s.existingSecretExpiry(ctx, tx, id, consumeVerifier)
 	}
 	if err := tx.Commit(); err != nil {
 		return time.Time{}, fmt.Errorf("commit created secret: %w", err)
 	}
 
 	return expiresAt, nil
+}
+
+// existingSecretExpiry answers a create that lost an id collision. A caller
+// holding the note's consume proof is repeating its own create, so it gets the
+// stored expiry back. Anyone else gets errSecretExists, which the handler
+// answers as an ordinary create so that creation cannot be used to probe
+// whether a note is still live.
+func (s *store) existingSecretExpiry(ctx context.Context, tx *sql.Tx, id string, consumeVerifier []byte) (time.Time, error) {
+	var storedVerifier []byte
+	var expiresAtUnix int64
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT consume_verifier, expires_at_unix FROM secrets WHERE id = ?",
+		id,
+	).Scan(&storedVerifier, &expiresAtUnix); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read existing secret: %w", err))
+	}
+	if subtle.ConstantTimeCompare(storedVerifier, consumeVerifier) != 1 {
+		return time.Time{}, rollbackWithError(tx, errSecretExists)
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("commit existing secret: %w", err)
+	}
+
+	return time.Unix(expiresAtUnix, 0).UTC(), nil
 }
 
 func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, now time.Time) (*storedSecret, error) {
@@ -775,6 +801,13 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 			window:     time.Minute,
 			maxClients: maxRateLimitClients,
 		},
+		// Reveals are far rarer than creates, so the create budget is a
+		// generous ceiling that still meters id probing.
+		consumeLimiter: &fixedWindowLimiter{
+			limit:      createRate,
+			window:     time.Minute,
+			maxClients: maxRateLimitClients,
+		},
 	}, nil
 }
 
@@ -882,16 +915,18 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiresAt, err := s.store.Create(r.Context(), request.ID, ciphertext, nonce, consumeVerifier, time.Now(), s.secretTTL)
-	if err != nil {
-		switch {
-		case errors.Is(err, errSecretExists):
-			writeError(w, http.StatusConflict, err.Error(), s.logger)
-			return
-		case errors.Is(err, errStoreCapacity):
-			writeError(w, http.StatusInsufficientStorage, err.Error(), s.logger)
-			return
-		}
+	now := time.Now()
+	expiresAt, err := s.store.Create(r.Context(), request.ID, ciphertext, nonce, consumeVerifier, now, s.secretTTL)
+	switch {
+	case err == nil:
+	case errors.Is(err, errSecretExists):
+		// A caller that does not hold the note's consume proof must not learn
+		// that an id is taken, so answer exactly as a fresh create would.
+		expiresAt = now.UTC().Add(s.secretTTL).Truncate(time.Second)
+	case errors.Is(err, errStoreCapacity):
+		writeError(w, http.StatusInsufficientStorage, err.Error(), s.logger)
+		return
+	default:
 		s.logger.Error("store secret", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error", s.logger)
 		return
@@ -941,6 +976,12 @@ func (s *server) validateCreateRequest(request createSecretRequest) ([]byte, []b
 }
 
 func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
+	if !s.consumeLimiter.Allow(clientKey(r), time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "secret reveal rate limit exceeded", s.logger)
+		return
+	}
+
 	id := r.PathValue("id")
 	if !tokenPattern.MatchString(id) {
 		writeError(w, http.StatusNotFound, "secret not found", s.logger)

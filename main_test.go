@@ -419,7 +419,7 @@ func TestLoadFingerprintedAssetUsesContentHash(t *testing.T) {
 	r.Equal(content, asset.content)
 }
 
-func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
+func TestCreateHandlerHandlesDuplicateIDWithoutLeakingLiveness(t *testing.T) {
 	r := require.New(t)
 	app := newTestServer(t)
 
@@ -427,6 +427,7 @@ func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
 	ciphertext := base64.RawURLEncoding.EncodeToString([]byte("encrypted first payload"))
 	nonce := base64.RawURLEncoding.EncodeToString([]byte("123456789012"))
 	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{11}, 32))
+	otherVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{18}, 32))
 	body := `{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + consumeVerifier + `"}`
 
 	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
@@ -434,11 +435,85 @@ func TestCreateHandlerRejectsDuplicateID(t *testing.T) {
 	app.ServeHTTP(firstResponse, firstRequest)
 	r.Equal(http.StatusCreated, firstResponse.Code)
 
-	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
+	// The key holder repeating its own create is idempotent.
+	retryRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(body))
+	retryResponse := httptest.NewRecorder()
+	app.ServeHTTP(retryResponse, retryRequest)
+	r.Equal(http.StatusCreated, retryResponse.Code)
+	r.Equal(firstResponse.Body.String(), retryResponse.Body.String())
+
+	// An observer holding only the path gets the same answer it would get for
+	// an id that was never used, so it learns nothing about the note.
+	probeBody := `{"id":"` + id + `","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + otherVerifier + `"}`
+	probeRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(probeBody))
+	probeResponse := httptest.NewRecorder()
+	app.ServeHTTP(probeResponse, probeRequest)
+
+	freshBody := `{"id":"unusedprobetargetnote0","ciphertext":"` + ciphertext + `","nonce":"` + nonce + `","consumeVerifier":"` + otherVerifier + `"}`
+	freshRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", bytes.NewBufferString(freshBody))
+	freshResponse := httptest.NewRecorder()
+	app.ServeHTTP(freshResponse, freshRequest)
+
+	r.Equal(http.StatusCreated, probeResponse.Code)
+	r.Equal(freshResponse.Code, probeResponse.Code)
+	var probed, fresh createSecretResponse
+	r.NoError(json.Unmarshal(probeResponse.Body.Bytes(), &probed))
+	r.NoError(json.Unmarshal(freshResponse.Body.Bytes(), &fresh))
+	r.Equal("/s/"+id, probed.Path)
+	r.Equal(fresh.ExpiresAt, probed.ExpiresAt)
+
+	// The probe must not have replaced the stored note.
+	consumeRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/"+id+"/consume", bytes.NewBufferString(`{"consumeVerifier":"`+consumeVerifier+`"}`))
+	consumeResponse := httptest.NewRecorder()
+	app.ServeHTTP(consumeResponse, consumeRequest)
+	r.Equal(http.StatusOK, consumeResponse.Code)
+	var consumed consumeSecretResponse
+	r.NoError(json.Unmarshal(consumeResponse.Body.Bytes(), &consumed))
+	r.Equal(ciphertext, consumed.Ciphertext)
+}
+
+func TestStoreCreateRejectsDuplicateIDFromAnotherKey(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	store := newTestStore(t)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	id := "duplicateidnote0000000"
+	consumeVerifier := bytes.Repeat([]byte{19}, 32)
+
+	expiresAt, err := store.Create(ctx, id, []byte("encrypted Abed"), []byte("123456789012"), consumeVerifier, now, time.Hour)
+	r.NoError(err)
+
+	retryExpiresAt, err := store.Create(ctx, id, []byte("encrypted Abed"), []byte("123456789012"), consumeVerifier, now.Add(time.Minute), time.Hour)
+	r.NoError(err)
+	r.Equal(expiresAt, retryExpiresAt)
+
+	_, err = store.Create(ctx, id, []byte("overwrite"), []byte("123456789012"), bytes.Repeat([]byte{20}, 32), now, time.Hour)
+	r.ErrorIs(err, errSecretExists)
+
+	secret, err := store.Consume(ctx, id, consumeVerifier, now)
+	r.NoError(err)
+	r.Equal([]byte("encrypted Abed"), secret.Ciphertext)
+}
+
+func TestConsumeHandlerRateLimitsRequests(t *testing.T) {
+	r := require.New(t)
+	store := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, defaultMaxSecretBytes, 1)
+	r.NoError(err)
+	app := server.routes()
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{21}, 32))
+
+	firstRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/probetargetnote0000000/consume", bytes.NewBufferString(`{"consumeVerifier":"`+consumeVerifier+`"}`))
+	firstResponse := httptest.NewRecorder()
+	app.ServeHTTP(firstResponse, firstRequest)
+	r.Equal(http.StatusGone, firstResponse.Code)
+
+	secondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets/probetargetnote0000001/consume", bytes.NewBufferString(`{"consumeVerifier":"`+consumeVerifier+`"}`))
 	secondResponse := httptest.NewRecorder()
 	app.ServeHTTP(secondResponse, secondRequest)
-	r.Equal(http.StatusConflict, secondResponse.Code)
-	r.Contains(secondResponse.Body.String(), "secret id already exists")
+	r.Equal(http.StatusTooManyRequests, secondResponse.Code)
+	r.Equal("60", secondResponse.Header().Get("Retry-After"))
 }
 
 func TestCreateHandlerRateLimitsRequests(t *testing.T) {
