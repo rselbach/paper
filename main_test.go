@@ -216,6 +216,41 @@ func TestStoreEnforcesCapacity(t *testing.T) {
 	}
 }
 
+func TestStoreAllowsExactRetryAtCapacity(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	ciphertext := []byte("Greendale")
+	store := newTestStoreWithLimits(t, int64(len(ciphertext)), 1)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	id := "capacityretrynote00000"
+	nonce := []byte("123456789012")
+	consumeVerifier := bytes.Repeat([]byte{1}, 32)
+
+	expiresAt, err := store.Create(
+		ctx,
+		id,
+		ciphertext,
+		nonce,
+		consumeVerifier,
+		now,
+		time.Hour,
+	)
+	r.NoError(err)
+
+	retryExpiry, err := store.Create(
+		ctx,
+		id,
+		ciphertext,
+		nonce,
+		consumeVerifier,
+		now.Add(time.Minute),
+		time.Hour,
+	)
+	r.NoError(err)
+	r.Equal(expiresAt, retryExpiry)
+	r.Equal(1, secretCount(t, store, id))
+}
+
 func TestStoreCapacityIgnoresExpiredSecrets(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()

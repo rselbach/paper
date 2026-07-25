@@ -58,6 +58,41 @@ test("sender creates a sealed note that cannot be revealed twice", async ({ page
   await expect(secondPage.locator("#status")).toContainText("Could not reveal secret: secret is unavailable or already used");
 });
 
+test("sender can retry when a successful create response is lost", async ({ page }) => {
+  let attemptCount = 0;
+  let committedStatus = 0;
+  const requestBodies = [];
+  await page.route("**/api/secrets", async (route) => {
+    attemptCount += 1;
+    requestBodies.push(route.request().postData());
+    if (attemptCount === 1) {
+      const response = await route.fetch();
+      committedStatus = response.status();
+      await response.body();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(baseURL);
+  await page.locator("#secret").fill("Meet at Greendale.");
+  await page.locator("button[type='submit']").click();
+  await expect(page.locator("#status")).toContainText("Could not create secret");
+  await expect(page.locator("button[type='submit']")).toBeEnabled();
+  expect(committedStatus).toBe(201);
+
+  await page.locator("button[type='submit']").click();
+  await expect(page.locator("#result")).toBeVisible();
+  expect(attemptCount).toBe(2);
+  expect(requestBodies[1]).toBe(requestBodies[0]);
+
+  const shareURL = await page.locator("#share-url").inputValue();
+  await page.goto(shareURL);
+  await page.locator("#reveal-button").click();
+  await expect(page.locator("#secret-output")).toHaveText("Meet at Greendale.");
+});
+
 test("recipient sees a clear error when the decryption key fragment is missing", async ({ page }) => {
   await page.goto(`${baseURL}/s/aaaaaaaaaaaaaaaaaaaaaa`);
 

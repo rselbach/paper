@@ -600,6 +600,24 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("delete expired secrets: %w", err))
 	}
 
+	existingExpiry, exists, err := s.existingSecretExpiry(
+		ctx,
+		tx,
+		id,
+		ciphertext,
+		nonce,
+		consumeVerifier,
+	)
+	if err != nil {
+		return time.Time{}, rollbackWithError(tx, err)
+	}
+	if exists {
+		if err := tx.Commit(); err != nil {
+			return time.Time{}, fmt.Errorf("commit retried secret: %w", err)
+		}
+		return existingExpiry, nil
+	}
+
 	var storedBytes int64
 	var storedItems int
 	if err := tx.QueryRowContext(
@@ -633,7 +651,24 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read inserted row count: %w", err))
 	}
 	if rowsAffected == 0 {
-		return s.existingSecretExpiry(ctx, tx, id, consumeVerifier)
+		existingExpiry, exists, err = s.existingSecretExpiry(
+			ctx,
+			tx,
+			id,
+			ciphertext,
+			nonce,
+			consumeVerifier,
+		)
+		if err != nil {
+			return time.Time{}, rollbackWithError(tx, err)
+		}
+		if !exists {
+			return time.Time{}, rollbackWithError(tx, errors.New("secret insert was ignored without an existing row"))
+		}
+		if err := tx.Commit(); err != nil {
+			return time.Time{}, fmt.Errorf("commit concurrently created secret: %w", err)
+		}
+		return existingExpiry, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return time.Time{}, fmt.Errorf("commit created secret: %w", err)
@@ -642,29 +677,36 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 	return expiresAt, nil
 }
 
-// existingSecretExpiry answers a create that lost an id collision. A caller
-// holding the note's consume proof is repeating its own create, so it gets the
-// stored expiry back. Anyone else gets errSecretExists, which the handler
-// answers as an ordinary create so that creation cannot be used to probe
-// whether a note is still live.
-func (s *store) existingSecretExpiry(ctx context.Context, tx *sql.Tx, id string, consumeVerifier []byte) (time.Time, error) {
-	var storedVerifier []byte
+// existingSecretExpiry recognizes an exact retry of an already committed
+// create request.
+func (s *store) existingSecretExpiry(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+	ciphertext []byte,
+	nonce []byte,
+	consumeVerifier []byte,
+) (time.Time, bool, error) {
+	var storedCiphertext, storedNonce, storedVerifier []byte
 	var expiresAtUnix int64
 	if err := tx.QueryRowContext(
 		ctx,
-		"SELECT consume_verifier, expires_at_unix FROM secrets WHERE id = ?",
+		`SELECT ciphertext, nonce, consume_verifier, expires_at_unix
+		 FROM secrets
+		 WHERE id = ?`,
 		id,
-	).Scan(&storedVerifier, &expiresAtUnix); err != nil {
-		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read existing secret: %w", err))
+	).Scan(&storedCiphertext, &storedNonce, &storedVerifier, &expiresAtUnix); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("read existing secret: %w", err)
 	}
-	if subtle.ConstantTimeCompare(storedVerifier, consumeVerifier) != 1 {
-		return time.Time{}, rollbackWithError(tx, errSecretExists)
+	if !bytes.Equal(storedCiphertext, ciphertext) ||
+		!bytes.Equal(storedNonce, nonce) ||
+		subtle.ConstantTimeCompare(storedVerifier, consumeVerifier) != 1 {
+		return time.Time{}, true, errSecretExists
 	}
-	if err := tx.Commit(); err != nil {
-		return time.Time{}, fmt.Errorf("commit existing secret: %w", err)
-	}
-
-	return time.Unix(expiresAtUnix, 0).UTC(), nil
+	return time.Unix(expiresAtUnix, 0).UTC(), true, nil
 }
 
 func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, now time.Time) (*storedSecret, error) {
@@ -929,8 +971,8 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 	case errors.Is(err, errSecretExists):
-		// A caller that does not hold the note's consume proof must not learn
-		// that an id is taken, so answer exactly as a fresh create would.
+		// Never replace the committed note or expose its stored metadata when a
+		// non-identical request reuses its id.
 		expiresAt = now.UTC().Add(s.secretTTL).Truncate(time.Second)
 	case errors.Is(err, errStoreCapacity):
 		writeError(w, http.StatusInsufficientStorage, err.Error(), s.logger)

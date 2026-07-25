@@ -33,6 +33,7 @@ const noteStatusCells = document.querySelectorAll("[data-note-status]");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+let pendingCreate = null;
 
 function setStatus(message, kind = "info") {
   statusBox.textContent = message;
@@ -131,6 +132,11 @@ function updateByteCount() {
   const bytes = encoder.encode(secretInput.value).length;
   charCount.textContent = `${bytes.toLocaleString()} / ${MAX_SECRET_BYTES.toLocaleString()}`;
   charCount.style.color = bytes > MAX_SECRET_BYTES ? "var(--error)" : "";
+}
+
+function handleSecretInput() {
+  pendingCreate = null;
+  updateByteCount();
 }
 
 function formatTimestamp(date) {
@@ -234,10 +240,19 @@ async function createSecret(event) {
 
   const button = createForm.querySelector("button[type='submit']");
   button.disabled = true;
-  setStatus("Encrypting in this browser...", "info");
+  secretInput.disabled = true;
+  setStatus(
+    pendingCreate === null
+      ? "Encrypting in this browser..."
+      : "Retrying the same encrypted request...",
+    "info",
+  );
 
   try {
-    const sealed = await sealSecret(secretInput.value);
+    if (pendingCreate === null) {
+      pendingCreate = await sealSecret(secretInput.value);
+    }
+    const sealed = pendingCreate;
     const response = await fetch("/api/secrets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -280,10 +295,12 @@ async function createSecret(event) {
     result.scrollIntoView({ behavior: "smooth", block: "nearest" });
     shareURL.focus();
     shareURL.select();
+    pendingCreate = null;
   } catch (error) {
     setStatus(`Could not create secret: ${error.message}`, "error");
   } finally {
     button.disabled = false;
+    secretInput.disabled = false;
   }
 }
 
@@ -370,7 +387,7 @@ function boot() {
 
   if (!isReveal) {
     document.title = "Paper — create a one-view private note";
-    secretInput.addEventListener("input", updateByteCount);
+    secretInput.addEventListener("input", handleSecretInput);
     createForm.addEventListener("submit", createSecret);
     copyLink.addEventListener("click", () => copyText(shareURL.value, "Link"));
     updateByteCount();
