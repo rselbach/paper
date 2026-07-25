@@ -40,6 +40,7 @@ const (
 	defaultMaxStoredItems  = 10_000
 	defaultCreateRate      = 60
 	defaultCleanupInterval = time.Hour
+	maxRateLimitClients    = 10_000
 	maxConfigDuration      = time.Duration(1<<63 - 1)
 	walCheckpointTimeout   = 5 * time.Second
 )
@@ -100,18 +101,18 @@ type fingerprintedAsset struct {
 	urlPath string
 }
 
-type clientWindow struct {
-	windowStart time.Time
-	count       int
-}
-
-// fixedWindowLimiter rate-limits each client key independently so one
-// source cannot exhaust the budget for everyone else.
+// fixedWindowLimiter rate-limits each client key independently so one source
+// cannot exhaust the budget for everyone else. Every key shares one aligned
+// window and the table is capped, so per-request work stays constant and a
+// client cannot grow it without bound.
 type fixedWindowLimiter struct {
-	mu      sync.Mutex
-	limit   int
-	window  time.Duration
-	clients map[string]*clientWindow
+	mu          sync.Mutex
+	limit       int
+	window      time.Duration
+	maxClients  int
+	windowStart time.Time
+	clients     map[string]int
+	overflow    int
 }
 
 type createSecretRequest struct {
@@ -340,48 +341,76 @@ func (l *fixedWindowLimiter) Allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.clients == nil {
-		l.clients = make(map[string]*clientWindow)
+	if l.windowStart.IsZero() || now.Before(l.windowStart) || now.Sub(l.windowStart) >= l.window {
+		l.windowStart = now
+		l.clients = make(map[string]int, len(l.clients))
+		l.overflow = 0
 	}
 
-	// Drop expired windows so the map cannot grow without bound.
-	for client, state := range l.clients {
-		if now.Before(state.windowStart) || now.Sub(state.windowStart) >= l.window {
-			delete(l.clients, client)
+	maxClients := l.maxClients
+	if maxClients <= 0 {
+		maxClients = maxRateLimitClients
+	}
+
+	count, tracked := l.clients[key]
+	// Once the table is full, untracked keys share a single budget so their
+	// number cannot grow the table or the cost of this call.
+	if !tracked && len(l.clients) >= maxClients {
+		if l.overflow >= l.limit {
+			return false
 		}
+		l.overflow++
+		return true
 	}
-
-	state := l.clients[key]
-	if state == nil {
-		state = &clientWindow{windowStart: now}
-		l.clients[key] = state
-	}
-	if now.Before(state.windowStart) || now.Sub(state.windowStart) >= l.window {
-		state.windowStart = now
-		state.count = 0
-	}
-	if state.count >= l.limit {
+	if count >= l.limit {
 		return false
 	}
-	state.count++
+	l.clients[key] = count + 1
 	return true
 }
 
+// clientKey identifies the rate-limit bucket for a request. Forwarding headers
+// are honored only for loopback peers, because the service listens on
+// localhost behind a local reverse proxy and any other peer is talking to us
+// directly and can forge them.
 func clientKey(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if ip := strings.TrimSpace(parts[0]); ip != "" {
-			return ip
-		}
-	}
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		return xri
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return clientKeyPrefix(host)
+	}
+	if forwarded := lastForwardedFor(r.Header.Values("X-Forwarded-For")); forwarded != "" {
+		return clientKeyPrefix(forwarded)
+	}
+	if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); real != "" {
+		return clientKeyPrefix(real)
+	}
+	return clientKeyPrefix(host)
+}
+
+// lastForwardedFor returns the rightmost X-Forwarded-For entry. Proxies append
+// the address they observed, so every entry to its left was supplied by the
+// client and cannot be trusted.
+func lastForwardedFor(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := strings.Split(values[len(values)-1], ",")
+	return strings.TrimSpace(parts[len(parts)-1])
+}
+
+// clientKeyPrefix groups IPv6 addresses by /64 so a single allocation cannot
+// supply an unbounded number of buckets.
+func clientKeyPrefix(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() != nil {
+		return host
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func openStore(ctx context.Context, path string, maxStoredBytes int64, maxStoredItems int) (*store, error) {
@@ -742,9 +771,9 @@ func newServer(store *store, logger *slog.Logger, publicOrigin string, secretTTL
 		secretTTL:      secretTTL,
 		maxSecretBytes: maxSecretBytes,
 		createLimiter: &fixedWindowLimiter{
-			limit:   createRate,
-			window:  time.Minute,
-			clients: make(map[string]*clientWindow),
+			limit:      createRate,
+			window:     time.Minute,
+			maxClients: maxRateLimitClients,
 		},
 	}, nil
 }

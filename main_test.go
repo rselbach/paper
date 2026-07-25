@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -472,11 +473,13 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 	app.ServeHTTP(otherResponse, otherRequest)
 	r.Equal(http.StatusCreated, otherResponse.Code)
 
-	// X-Forwarded-For identifies clients behind a reverse proxy.
+	// A loopback peer is the local reverse proxy, which appends the address
+	// it observed. The rightmost entry identifies the client; the values to
+	// its left came from the client and are ignored.
 	proxyBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote000","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
 	proxyRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxyBody)
 	proxyRequest.RemoteAddr = "127.0.0.1:40000"
-	proxyRequest.Header.Set("X-Forwarded-For", "198.51.100.7, 127.0.0.1")
+	proxyRequest.Header.Set("X-Forwarded-For", "203.0.113.99, 198.51.100.7")
 	proxyResponse := httptest.NewRecorder()
 	app.ServeHTTP(proxyResponse, proxyRequest)
 	r.Equal(http.StatusCreated, proxyResponse.Code)
@@ -484,10 +487,123 @@ func TestCreateHandlerRateLimitsRequests(t *testing.T) {
 	proxySecondBody := bytes.NewBufferString(`{"id":"ratelimitproxiednote001","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
 	proxySecondRequest := httptest.NewRequest(http.MethodPost, "/api/secrets", proxySecondBody)
 	proxySecondRequest.RemoteAddr = "127.0.0.1:40001"
-	proxySecondRequest.Header.Set("X-Forwarded-For", "198.51.100.7")
+	proxySecondRequest.Header.Set("X-Forwarded-For", "192.0.2.55, 198.51.100.7")
 	proxySecondResponse := httptest.NewRecorder()
 	app.ServeHTTP(proxySecondResponse, proxySecondRequest)
 	r.Equal(http.StatusTooManyRequests, proxySecondResponse.Code)
+}
+
+func TestCreateHandlerIgnoresForwardedHeadersFromDirectClients(t *testing.T) {
+	r := require.New(t)
+	store := newTestStore(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, defaultMaxSecretBytes, 1)
+	r.NoError(err)
+	app := server.routes()
+	consumeVerifier := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{17}, 32))
+
+	// A direct client forging a fresh X-Forwarded-For per request must not
+	// escape its own bucket.
+	codes := make([]int, 0, 3)
+	for index, forwarded := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
+		id := fmt.Sprintf("spoofedforwardednote%02d", index)
+		body := bytes.NewBufferString(`{"id":"` + id + `","ciphertext":"YWJj","nonce":"MTIzNDU2Nzg5MDEy","consumeVerifier":"` + consumeVerifier + `"}`)
+		request := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+		request.RemoteAddr = "203.0.113.30:50000"
+		request.Header.Set("X-Forwarded-For", forwarded)
+		request.Header.Set("X-Real-IP", forwarded)
+		response := httptest.NewRecorder()
+		app.ServeHTTP(response, request)
+		codes = append(codes, response.Code)
+	}
+
+	r.Equal([]int{http.StatusCreated, http.StatusTooManyRequests, http.StatusTooManyRequests}, codes)
+}
+
+func TestClientKey(t *testing.T) {
+	tests := map[string]struct {
+		remoteAddr string
+		forwarded  []string
+		realIP     string
+		want       string
+	}{
+		"direct client": {
+			remoteAddr: "203.0.113.10:50000",
+			want:       "203.0.113.10",
+		},
+		"direct client forging headers": {
+			remoteAddr: "203.0.113.10:50000",
+			forwarded:  []string{"10.0.0.1"},
+			realIP:     "10.0.0.2",
+			want:       "203.0.113.10",
+		},
+		"proxied client": {
+			remoteAddr: "127.0.0.1:40000",
+			forwarded:  []string{"10.0.0.1, 198.51.100.7"},
+			want:       "198.51.100.7",
+		},
+		"proxied client across header lines": {
+			remoteAddr: "127.0.0.1:40000",
+			forwarded:  []string{"10.0.0.1", "198.51.100.7"},
+			want:       "198.51.100.7",
+		},
+		"proxied client with real ip only": {
+			remoteAddr: "[::1]:40000",
+			realIP:     "198.51.100.8",
+			want:       "198.51.100.8",
+		},
+		"proxy without forwarding headers": {
+			remoteAddr: "127.0.0.1:40000",
+			want:       "127.0.0.1",
+		},
+		"ipv6 client grouped by prefix": {
+			remoteAddr: "[2001:db8:1:2:3:4:5:6]:50000",
+			want:       "2001:db8:1:2::/64",
+		},
+		"unparseable remote address": {
+			remoteAddr: "unix",
+			want:       "unix",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			request := httptest.NewRequest(http.MethodPost, "/api/secrets", nil)
+			request.RemoteAddr = tc.remoteAddr
+			for _, value := range tc.forwarded {
+				request.Header.Add("X-Forwarded-For", value)
+			}
+			if tc.realIP != "" {
+				request.Header.Set("X-Real-IP", tc.realIP)
+			}
+
+			r.Equal(tc.want, clientKey(request))
+		})
+	}
+}
+
+func TestFixedWindowLimiter(t *testing.T) {
+	r := require.New(t)
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	limiter := &fixedWindowLimiter{limit: 2, window: time.Minute, maxClients: 2}
+
+	r.True(limiter.Allow("troy", now))
+	r.True(limiter.Allow("troy", now))
+	r.False(limiter.Allow("troy", now))
+
+	// Every key gets its own budget.
+	r.True(limiter.Allow("abed", now))
+
+	// The table is full, so further keys share one budget of their own.
+	r.True(limiter.Allow("britta", now))
+	r.True(limiter.Allow("shirley", now))
+	r.False(limiter.Allow("jeff", now))
+	r.Len(limiter.clients, 2)
+
+	// A new window clears everything.
+	r.True(limiter.Allow("troy", now.Add(time.Minute)))
+	r.Len(limiter.clients, 1)
 }
 
 func TestCreateHandlerRejectsRequestsAtStorageCapacity(t *testing.T) {
