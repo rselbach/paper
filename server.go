@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"path"
 	"regexp"
@@ -201,6 +203,11 @@ func (s *server) writeHTML(w http.ResponseWriter) {
 }
 
 func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "content type must be application/json", s.logger)
+		return
+	}
+
 	if !s.createLimiter.Allow(clientKey(r), time.Now()) {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "secret creation rate limit exceeded", s.logger)
@@ -216,9 +223,7 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	var request createSecretRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeJSON(r.Body, &request); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err), s.logger)
 		return
 	}
@@ -310,6 +315,11 @@ func secretIDForCreateVerifier(createVerifier []byte) string {
 }
 
 func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "content type must be application/json", s.logger)
+		return
+	}
+
 	if !s.consumeLimiter.Allow(clientKey(r), time.Now()) {
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "secret reveal rate limit exceeded", s.logger)
@@ -330,9 +340,7 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	var request consumeSecretRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeJSON(r.Body, &request); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err), s.logger)
 		return
 	}
@@ -367,6 +375,26 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 		Ciphertext: base64.RawURLEncoding.EncodeToString(secret.Ciphertext),
 		Nonce:      base64.RawURLEncoding.EncodeToString(secret.Nonce),
 	}, s.logger)
+}
+
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && mediaType == "application/json"
+}
+
+func decodeJSON(body io.Reader, destination any) error {
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain one JSON value")
+		}
+		return fmt.Errorf("read trailing request data: %w", err)
+	}
+	return nil
 }
 
 func (s *server) securityHeaders(next http.Handler) http.Handler {
