@@ -1008,6 +1008,7 @@ func TestIndexInjectsMaxBytesAndVersion(t *testing.T) {
 	r.NoError(err)
 
 	r.Contains(string(srv.index), `<meta name="paper-max-bytes" content="12345">`)
+	r.NotContains(string(srv.index), "maxlength=")
 	r.Contains(string(srv.index), `<meta name="paper-version" content="abc123">`)
 	r.Contains(string(srv.index), `Paper abc123`)
 	r.Contains(string(srv.index), "works exactly once")
