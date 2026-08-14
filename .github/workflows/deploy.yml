@@ -26,6 +26,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test deployment decisions
+        run: ./deploy/deploy-server_test.sh
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.PAPER_SSH_PRIVATE_KEY }}
