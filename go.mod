@@ -2,6 +2,8 @@ module github.com/rselbach/paper
 
 go 1.25
 
+toolchain go1.26.6
+
 require (
 	github.com/stretchr/testify v1.11.1
 	modernc.org/sqlite v1.39.1
