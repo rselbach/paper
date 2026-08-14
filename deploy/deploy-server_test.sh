@@ -12,6 +12,8 @@ readonly SCRIPT_DIR
 
 # shellcheck source=deploy/deploy-server.sh
 source "${SCRIPT_DIR}/deploy-server.sh"
+# shellcheck source=deploy/install.sh
+source "${SCRIPT_DIR}/install.sh"
 
 fail() {
   printf 'FAIL: %s\n' "${1}" >&2
@@ -61,6 +63,13 @@ rollback_server() {
 
 sleep() {
   :
+}
+
+sudo_run() {
+  SUDO_CALL_COUNT=$((SUDO_CALL_COUNT + 1))
+  if ((SUDO_CALL_COUNT == SUDO_FAIL_AT)); then
+    return 1
+  fi
 }
 
 assert_status() {
@@ -158,6 +167,27 @@ test_install_rolls_back_after_binary_promotion() {
     "rollback count after successful install"
 }
 
+test_local_install_propagates_failures() {
+  SUDO_CALL_COUNT=0
+  SUDO_FAIL_AT=1
+  STAGED_BINARY=true
+  assert_status 1 "binary promotion failure" promote_binary
+  assert_value true "${STAGED_BINARY}" \
+    "staged binary retained for cleanup"
+
+  SUDO_CALL_COUNT=0
+  SUDO_FAIL_AT=1
+  HAD_INSTALLED_BINARY=true
+  SERVICE_WAS_ACTIVE=false
+  assert_status 1 "binary restore failure" rollback_binary
+
+  SUDO_CALL_COUNT=0
+  SUDO_FAIL_AT=2
+  HAD_INSTALLED_BINARY=true
+  SERVICE_WAS_ACTIVE=true
+  assert_status 1 "service restore failure" rollback_binary
+}
+
 main() {
   TEST_DIR="$(mktemp -d)"
   COMMAND_LOG="${TEST_DIR}/commands"
@@ -172,6 +202,7 @@ main() {
   test_public_version_classification
   assert_public_commands_are_bounded
   test_install_rolls_back_after_binary_promotion
+  test_local_install_propagates_failures
   printf 'deploy-server tests passed\n'
 }
 
