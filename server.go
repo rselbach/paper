@@ -170,8 +170,13 @@ func (s *server) handleFingerprintedAsset(w http.ResponseWriter, r *http.Request
 	http.ServeContent(w, r, asset.name, time.Time{}, bytes.NewReader(asset.content))
 }
 
-func (s *server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if err := s.store.Ready(r.Context()); err != nil {
+		s.logger.Error("health check database", "error", err)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte("ok\n")); err != nil {
 		s.logger.Error("write health response", "error", err)

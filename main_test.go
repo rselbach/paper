@@ -453,6 +453,23 @@ func TestHealthEndpoint(t *testing.T) {
 	r.Equal("ok\n", response.Body.String())
 }
 
+func TestHealthEndpointRejectsUnavailableStore(t *testing.T) {
+	r := require.New(t)
+	store := newTestStore(t)
+	_, err := store.db.Exec("DROP TABLE secrets")
+	r.NoError(err)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server, err := newServer(store, logger, "", time.Hour, defaultMaxSecretBytes, defaultCreateRate)
+	r.NoError(err)
+
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+	server.routes().ServeHTTP(response, request)
+
+	r.Equal(http.StatusServiceUnavailable, response.Code)
+	r.Equal("unavailable\n", response.Body.String())
+}
+
 func TestSecretPageValidatesID(t *testing.T) {
 	r := require.New(t)
 	app := newTestServer(t)

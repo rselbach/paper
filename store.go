@@ -200,6 +200,14 @@ func (s *store) Close() error {
 	return s.db.Close()
 }
 
+func (s *store) Ready(ctx context.Context) error {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM secrets)").Scan(&exists); err != nil {
+		return fmt.Errorf("query secrets: %w", err)
+	}
+	return nil
+}
+
 func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce []byte, consumeVerifier []byte, now time.Time, ttl time.Duration) (time.Time, error) {
 	expiresAt := now.UTC().Add(ttl).Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
