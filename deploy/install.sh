@@ -12,6 +12,12 @@ readonly SERVICE_NAME="paper"
 readonly BINARY_NAME="paper"
 readonly INSTALL_DIR="/usr/local/bin"
 readonly INSTALL_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+readonly STAGED_PATH="${INSTALL_PATH}.next"
+readonly BACKUP_PATH="${INSTALL_PATH}.previous"
+
+SERVICE_WAS_ACTIVE=false
+HAD_INSTALLED_BINARY=false
+STAGED_BINARY=false
 
 err() {
   echo "install.sh: $*" >&2
@@ -67,45 +73,89 @@ stop_service() {
     return 0
   fi
 
-  if sudo_run systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-    echo "Stopping ${SERVICE_NAME}.service..."
-    sudo_run systemctl stop "${SERVICE_NAME}.service"
+	if sudo_run systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+		SERVICE_WAS_ACTIVE=true
+		echo "Stopping ${SERVICE_NAME}.service..."
+		sudo_run systemctl stop "${SERVICE_NAME}.service"
   else
     echo "${SERVICE_NAME}.service is not running; nothing to stop."
   fi
 }
 
-install_binary() {
-  echo "Installing binary to ${INSTALL_PATH}..."
-  sudo_run install -m 0755 "${BUILD_DIR}/${BINARY_NAME}" "${INSTALL_PATH}"
+stage_binary() {
+	echo "Staging binary at ${STAGED_PATH}..."
+	sudo_run install -m 0755 "${BUILD_DIR}/${BINARY_NAME}" "${STAGED_PATH}"
+	STAGED_BINARY=true
+}
+
+backup_binary() {
+	if [[ ! -f "${INSTALL_PATH}" ]]; then
+		return 0
+	fi
+
+	sudo_run cp -a "${INSTALL_PATH}" "${BACKUP_PATH}"
+	HAD_INSTALLED_BINARY=true
+}
+
+promote_binary() {
+	echo "Installing binary to ${INSTALL_PATH}..."
+	sudo_run mv "${STAGED_PATH}" "${INSTALL_PATH}"
+	STAGED_BINARY=false
 }
 
 start_service() {
   echo "Starting ${SERVICE_NAME}.service..."
   sudo_run systemctl start "${SERVICE_NAME}.service"
 
-  if ! sudo_run systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-    sudo_run systemctl --no-pager status "${SERVICE_NAME}.service" >&2 || true
-    die "${SERVICE_NAME}.service failed to start"
-  fi
+	if ! sudo_run systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+		sudo_run systemctl --no-pager status "${SERVICE_NAME}.service" >&2 || true
+		err "${SERVICE_NAME}.service failed to start"
+		return 1
+	fi
 
   echo "${SERVICE_NAME}.service is running."
 }
 
+rollback_binary() {
+	err "restoring the previous installation"
+	if [[ "${HAD_INSTALLED_BINARY}" == true ]]; then
+		sudo_run install -m 0755 "${BACKUP_PATH}" "${INSTALL_PATH}"
+	else
+		sudo_run rm -f "${INSTALL_PATH}"
+	fi
+
+	if [[ "${SERVICE_WAS_ACTIVE}" == true ]]; then
+		sudo_run systemctl restart "${SERVICE_NAME}.service"
+	fi
+}
+
 cleanup() {
-  if [[ -n "${BUILD_DIR:-}" && -d "${BUILD_DIR}" ]]; then
-    rm -rf "${BUILD_DIR}"
-  fi
+	if [[ -n "${BUILD_DIR:-}" && -d "${BUILD_DIR}" ]]; then
+		rm -rf "${BUILD_DIR}"
+	fi
+	if [[ "${STAGED_BINARY}" == true ]]; then
+		sudo_run rm -f "${STAGED_PATH}"
+	fi
 }
 
 main() {
   BUILD_DIR=""
-  trap cleanup EXIT
+	trap cleanup EXIT
 
-  build
-  stop_service
-  install_binary
-  start_service
+	build
+	stage_binary
+	backup_binary
+	if ! stop_service; then
+		die "could not stop ${SERVICE_NAME}.service"
+	fi
+	if ! promote_binary; then
+		rollback_binary || err "could not restore the previous installation"
+		die "could not install ${BINARY_NAME}"
+	fi
+	if ! start_service; then
+		rollback_binary || err "could not restore the previous installation"
+		die "could not start ${SERVICE_NAME}.service"
+	fi
 
   echo "Done."
 }
