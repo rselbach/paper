@@ -110,6 +110,45 @@ func TestStoreConsumeRemovesCiphertextFromDatabaseFiles(t *testing.T) {
 	}
 }
 
+func TestStoreConsumeReturnsSecretWhenWALCheckpointIsBusy(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "paper-busy-wal.db")
+	store, err := openStore(ctx, path, defaultMaxStoredBytes, defaultMaxStoredItems)
+	r.NoError(err)
+	t.Cleanup(func() {
+		r.NoError(store.Close())
+	})
+
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	id := "busywalcheckpoint00000"
+	ciphertext := []byte("encrypted Greendale flag")
+	consumeVerifier := bytes.Repeat([]byte{22}, 32)
+	_, err = store.Create(ctx, id, ciphertext, []byte("123456789012"), consumeVerifier, now, time.Hour)
+	r.NoError(err)
+
+	reader, err := sql.Open("sqlite", path)
+	r.NoError(err)
+	t.Cleanup(func() {
+		r.NoError(reader.Close())
+	})
+	readTx, err := reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	r.NoError(err)
+	t.Cleanup(func() {
+		r.NoError(readTx.Rollback())
+	})
+	var count int
+	r.NoError(readTx.QueryRowContext(ctx, "SELECT COUNT(*) FROM secrets").Scan(&count))
+	r.Equal(1, count)
+
+	secret, err := store.Consume(ctx, id, consumeVerifier, now)
+	r.Error(err)
+	r.Contains(err.Error(), "truncate sqlite WAL")
+	r.NotNil(secret)
+	r.Equal(ciphertext, secret.Ciphertext)
+	r.Equal(0, secretCount(t, store, id))
+}
+
 func TestStoreConsumeRejectsWrongVerifierWithoutDeletingSecret(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()

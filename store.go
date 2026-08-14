@@ -14,11 +14,11 @@ import (
 )
 
 var (
-	errSecretExists      = errors.New("secret id already exists")
-	errSecretUnavailable = errors.New("secret is unavailable or already used")
-	errSecretExpired     = errors.New("secret expired")
+	errSecretExists       = errors.New("secret id already exists")
+	errSecretUnavailable  = errors.New("secret is unavailable or already used")
+	errSecretExpired      = errors.New("secret expired")
 	errSecretUnauthorized = errors.New("invalid secret key proof")
-	errStoreCapacity     = errors.New("secret storage capacity reached")
+	errStoreCapacity      = errors.New("secret storage capacity reached")
 )
 
 type store struct {
@@ -371,7 +371,9 @@ func (s *store) Consume(ctx context.Context, id string, consumeVerifier []byte, 
 		return nil, fmt.Errorf("commit consumed secret deletion: %w", err)
 	}
 	if err := s.truncateWAL(); err != nil {
-		return nil, err
+		// The delete is already committed. Return the payload with the
+		// maintenance error so the handler can deliver the one available copy.
+		return &secret, err
 	}
 
 	return &secret, nil

@@ -356,7 +356,10 @@ func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secret, err := s.store.Consume(r.Context(), id, consumeVerifier, time.Now())
-	if err != nil {
+	if err != nil && secret != nil {
+		s.logger.Error("truncate sqlite WAL after consume", "error", err)
+	}
+	if err != nil && secret == nil {
 		switch {
 		case errors.Is(err, errSecretUnavailable),
 			errors.Is(err, errSecretExpired),
