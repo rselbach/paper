@@ -101,6 +101,25 @@ test("recipient sees a clear error when the decryption key fragment is missing",
   await expect(page.locator("#status")).toContainText("Missing #decryption-key fragment");
 });
 
+for (const label of ["How it works", "Security"]) {
+  test(`recipient can read ${label} before opening a note`, async ({ page }) => {
+    await page.goto(baseURL);
+    await page.locator("#secret").fill("Troy Barnes");
+    await page.locator("button[type='submit']").click();
+    await expect(page.locator("#result")).toBeVisible();
+    const shareURL = await page.locator("#share-url").inputValue();
+
+    await page.goto(shareURL);
+    await page.getByRole("link", { name: label, exact: true }).click();
+    expect(page.url()).toBe(shareURL);
+    if (label === "Security") {
+      await expect(page.locator("#reveal-security-details p")).toBeVisible();
+    }
+    await page.locator("#reveal-button").click();
+    await expect(page.locator("#secret-output")).toHaveText("Troy Barnes");
+  });
+}
+
 test("mobile layout does not create horizontal overflow in primary states", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(baseURL);

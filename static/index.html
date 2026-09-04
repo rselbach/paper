@@ -14,7 +14,7 @@
     <a class="brand" href="/" aria-label="Paper home">Paper</a>
     <nav class="header-links" aria-label="Page information">
       <a class="how-link" href="#privacy-note">How it works</a>
-      <a href="#security-details">Security</a>
+      <a class="security-link" href="#security-details">Security</a>
     </nav>
   </header>
 
@@ -147,7 +147,7 @@
           <li><strong>Decrypt locally</strong><span>This browser uses the key from the link.</span></li>
           <li><strong>No retry</strong><span>A failed delivery can still consume the note.</span></li>
         </ol>
-        <details>
+        <details id="reveal-security-details">
           <summary>Technical details</summary>
           <p>The decryption key is in the URL fragment and never reaches the server.</p>
         </details>

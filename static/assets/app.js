@@ -27,6 +27,7 @@ const secretOutputGroup = document.querySelector("#secret-output-group");
 const copySecret = document.querySelector("#copy-secret");
 const statusBox = document.querySelector("#status");
 const howLink = document.querySelector(".how-link");
+const securityLink = document.querySelector(".security-link");
 const fileIdCells = document.querySelectorAll("[data-file-id]");
 const expiryCells = document.querySelectorAll("[data-expiry]");
 const noteStatusCells = document.querySelectorAll("[data-note-status]");
@@ -380,10 +381,21 @@ async function revealSecret() {
   }
 }
 
+function showPageInformation(event) {
+  event.preventDefault();
+  const section = document.getElementById(event.currentTarget.hash.slice(1));
+  if (section.tagName === "DETAILS") {
+    section.open = true;
+  }
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function boot() {
   const isReveal = window.location.pathname.startsWith("/s/");
   createView.hidden = isReveal;
   revealView.hidden = !isReveal;
+  howLink.addEventListener("click", showPageInformation);
+  securityLink.addEventListener("click", showPageInformation);
 
   if (!isReveal) {
     document.title = "Paper — create a one-view private note";
@@ -397,6 +409,7 @@ function boot() {
 
   document.title = "Paper — open a private note";
   howLink.href = "#reveal-privacy-note";
+  securityLink.href = "#reveal-security-details";
   const id = window.location.pathname.replace(/\/+$/, "").split("/").pop();
   setFileId(id);
   setNoteStatus("Unopened");
