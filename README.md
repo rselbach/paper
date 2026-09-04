@@ -40,8 +40,9 @@ go run .
   expiry time.
 - Creation IDs commit to a server-referenced timestamp. Creation retries are
   accepted for ten minutes, with one minute of clock tolerance. A separate table
-  retains only accepted IDs and retry deadlines for eleven minutes, capped at
-  10,000 records. Consuming a note deletes its payload but leaves this short-lived
+  retains only accepted IDs and retry deadlines, capped at 10,000 records.
+  Receipts expire after eleven minutes and are removed on the next creation or
+  cleanup pass. Consuming a note deletes its payload but leaves this short-lived
   receipt, preventing retries from reviving it. After receipt cleanup, the
   timestamp check rejects the old request. Existing shared links remain readable;
   pages loaded before this protocol update must reload before creating a note.
