@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -34,7 +36,19 @@ type storedSecret struct {
 }
 
 func openStore(ctx context.Context, path string, maxStoredBytes int64, maxStoredItems int) (*store, error) {
-	db, err := sql.Open("sqlite", path)
+	// The driver applies these settings to every connection, including replacements.
+	pragmas := url.Values{"_pragma": {
+		"busy_timeout = 5000",
+		"foreign_keys = ON",
+		"secure_delete = ON",
+		"journal_mode = WAL",
+		"journal_size_limit = 0",
+	}}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite", path+separator+pragmas.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -44,32 +58,16 @@ func openStore(ctx context.Context, path string, maxStoredBytes int64, maxStored
 		maxStoredBytes: maxStoredBytes,
 		maxStoredItems: maxStoredItems,
 	}
-	if err := store.configure(ctx); err != nil {
+	db.SetMaxOpenConns(1)
+	if err := store.migrate(ctx); err != nil {
 		closeErr := db.Close()
 		if closeErr != nil {
-			return nil, fmt.Errorf("%w; close sqlite after configure failure: %v", err, closeErr)
+			return nil, fmt.Errorf("%w; close sqlite after migration failure: %v", err, closeErr)
 		}
 		return nil, err
 	}
 
 	return store, nil
-}
-
-func (s *store) configure(ctx context.Context) error {
-	s.db.SetMaxOpenConns(1)
-	pragmas := []string{
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA secure_delete = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA journal_size_limit = 0",
-	}
-	for _, pragma := range pragmas {
-		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
-			return fmt.Errorf("exec sqlite statement %q: %w", pragma, err)
-		}
-	}
-	return s.migrate(ctx)
 }
 
 func (s *store) migrate(ctx context.Context) error {
