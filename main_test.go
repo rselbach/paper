@@ -1197,7 +1197,7 @@ func TestDeploymentArtifactsMatchExpectedServiceBehavior(t *testing.T) {
 		"WorkingDirectory=/var/lib/paper",
 		"ExecStart=/usr/local/bin/paper",
 		"Restart=on-failure",
-		"Environment=PAPER_ADDR=127.0.0.1:8000",
+		"Environment=PAPER_ADDR=127.0.0.1:8001",
 		"Environment=PAPER_DB=/var/lib/paper/paper.db",
 		"Environment=PAPER_PUBLIC_ORIGIN=https://paper.rselbach.com",
 		"Environment=PAPER_SECRET_TTL_HOURS=72",

@@ -124,6 +124,23 @@ test_public_health_classification() {
   assert_status 0 "eventually healthy endpoint" check_public_server
 }
 
+test_service_matches_local_checks() {
+  local line service_addr
+  service_addr=""
+  while IFS= read -r line; do
+    if [[ "${line}" == Environment=PAPER_ADDR=* ]]; then
+      service_addr="${line#Environment=PAPER_ADDR=}"
+    fi
+  done <"${SCRIPT_DIR}/paper.service"
+  if [[ -z "${service_addr}" ]]; then
+    fail "service has no PAPER_ADDR"
+  fi
+  assert_value "http://${service_addr}/healthz" "${LOCAL_HEALTH_URL}" \
+    "service health address"
+  assert_value "http://${service_addr}/" "${LOCAL_INDEX_URL}" \
+    "service index address"
+}
+
 test_public_version_classification() {
   local version marker
   version="community-test-version"
@@ -199,6 +216,7 @@ main() {
   : >"${REMOTE_COMMAND_LOG}"
 
   test_public_health_classification
+  test_service_matches_local_checks
   test_public_version_classification
   assert_public_commands_are_bounded
   test_install_rolls_back_after_binary_promotion
