@@ -98,6 +98,21 @@ func (s *store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (2)"); err != nil {
 			return fmt.Errorf("record schema_version 2: %w", err)
 		}
+		current = 2
+	}
+	if current < 3 {
+		if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS create_receipts (
+			id TEXT PRIMARY KEY,
+			expires_at_unix INTEGER NOT NULL
+		) STRICT`); err != nil {
+			return fmt.Errorf("create retry receipts: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS create_receipts_expiry_idx ON create_receipts(expires_at_unix)"); err != nil {
+			return fmt.Errorf("index retry receipts: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (3)"); err != nil {
+			return fmt.Errorf("record schema_version 3: %w", err)
+		}
 	}
 	return nil
 }
@@ -223,6 +238,9 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 	); err != nil {
 		return time.Time{}, rollbackWithError(tx, fmt.Errorf("delete expired secrets: %w", err))
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM create_receipts WHERE expires_at_unix <= ?", now.UTC().Unix()); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("delete expired retry receipts: %w", err))
+	}
 
 	existingExpiry, exists, err := s.existingSecretExpiry(
 		ctx,
@@ -240,6 +258,20 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 			return time.Time{}, fmt.Errorf("commit retried secret: %w", err)
 		}
 		return existingExpiry, nil
+	}
+
+	var seen bool
+	var receipts int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM create_receipts WHERE id = ?),
+		(SELECT COUNT(*) FROM create_receipts)`, id).Scan(&seen, &receipts); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("read retry receipts: %w", err))
+	}
+	if seen {
+		return time.Time{}, rollbackWithError(tx, errSecretUnavailable)
+	}
+	if receipts >= maxCreateReceipts {
+		return time.Time{}, rollbackWithError(tx, errStoreCapacity)
 	}
 
 	var storedBytes int64
@@ -293,6 +325,12 @@ func (s *store) Create(ctx context.Context, id string, ciphertext []byte, nonce 
 			return time.Time{}, fmt.Errorf("commit concurrently created secret: %w", err)
 		}
 		return existingExpiry, nil
+	}
+	// Keep only the ID until every creation request carrying it has expired.
+	// The API rejects old timestamps and binds them to the ID commitment.
+	receiptExpiry := now.Add(createRetryWindow + createClockSkew).UTC().Unix()
+	if _, err := tx.ExecContext(ctx, "INSERT INTO create_receipts (id, expires_at_unix) VALUES (?, ?)", id, receiptExpiry); err != nil {
+		return time.Time{}, rollbackWithError(tx, fmt.Errorf("record creation receipt: %w", err))
 	}
 	if err := tx.Commit(); err != nil {
 		return time.Time{}, fmt.Errorf("commit created secret: %w", err)
@@ -393,6 +431,9 @@ func (s *store) DeleteExpired(ctx context.Context, now time.Time) error {
 	)
 	if err != nil {
 		return fmt.Errorf("delete expired secrets: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM create_receipts WHERE expires_at_unix <= ?", now.UTC().Unix()); err != nil {
+		return fmt.Errorf("delete expired retry receipts: %w", err)
 	}
 	return s.truncateWAL()
 }

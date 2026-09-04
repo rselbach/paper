@@ -89,14 +89,24 @@ async function createIdentity(rawKey) {
   verifierInput.set(rawKey, verifierContext.length);
   const verifier = new Uint8Array(await crypto.subtle.digest("SHA-256", verifierInput));
 
-  const idContext = encoder.encode("paper id v1\0");
+  // Use server time so clock drift on this device cannot invalidate the ID.
+  const response = await fetch("/healthz", { method: "HEAD", cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("Could not get the server time. Try again.");
+  }
+  const createdAt = Date.parse(response.headers.get("Date")) / 1000;
+  if (!Number.isSafeInteger(createdAt)) {
+    throw new Error("The server did not provide a valid time. Try again.");
+  }
+  const timestamp = createdAt.toString(36);
+  const idContext = encoder.encode(`paper id v2\0${timestamp}\0`);
   const idInput = new Uint8Array(idContext.length + verifier.length);
   idInput.set(idContext);
   idInput.set(verifier, idContext.length);
   const idDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", idInput));
 
   return {
-    id: bytesToBase64URL(idDigest.subarray(0, 16)),
+    id: `${timestamp}_${bytesToBase64URL(idDigest.subarray(0, 16))}`,
     verifier: bytesToBase64URL(verifier),
   };
 }
@@ -267,6 +277,9 @@ async function createSecret(event) {
     });
 
     if (!response.ok) {
+      if (response.status === 410) {
+        pendingCreate = null;
+      }
       throw new Error(await readError(response));
     }
 

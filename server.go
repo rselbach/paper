@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
@@ -26,7 +27,8 @@ var (
 	//go:embed static/index.html static/assets
 	staticFiles embed.FS
 
-	tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
+	tokenPattern     = regexp.MustCompile(`^[A-Za-z0-9_-]{22,64}$`)
+	errCreateExpired = errors.New("creation request expired; try creating a new link")
 )
 
 type server struct {
@@ -60,6 +62,13 @@ type createSecretResponse struct {
 	URL       string    `json:"url"`
 	Path      string    `json:"path"`
 	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+type validatedCreateRequest struct {
+	ciphertext      []byte
+	nonce           []byte
+	consumeVerifier []byte
+	retryDeadline   time.Time
 }
 
 type consumeSecretResponse struct {
@@ -233,14 +242,21 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ciphertext, nonce, consumeVerifier, err := s.validateCreateRequest(request)
+	now := time.Now()
+	validated, err := s.validateCreateRequest(request, now)
 	if err != nil {
+		if errors.Is(err, errCreateExpired) {
+			writeError(w, http.StatusGone, err.Error(), s.logger)
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error(), s.logger)
 		return
 	}
 
-	now := time.Now()
-	expiresAt, err := s.store.Create(r.Context(), request.ID, ciphertext, nonce, consumeVerifier, now, s.secretTTL)
+	// Queued requests must not outlive the receipts that prevent their replay.
+	ctx, cancel := context.WithDeadline(r.Context(), validated.retryDeadline)
+	defer cancel()
+	expiresAt, err := s.store.Create(ctx, request.ID, validated.ciphertext, validated.nonce, validated.consumeVerifier, now, s.secretTTL)
 	switch {
 	case err == nil:
 	case errors.Is(err, errSecretExists):
@@ -249,6 +265,9 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 		expiresAt = now.UTC().Add(s.secretTTL).Truncate(time.Second)
 	case errors.Is(err, errStoreCapacity):
 		writeError(w, http.StatusInsufficientStorage, err.Error(), s.logger)
+		return
+	case errors.Is(err, errSecretUnavailable):
+		writeError(w, http.StatusGone, err.Error(), s.logger)
 		return
 	default:
 		s.logger.Error("store secret", "error", err)
@@ -264,59 +283,76 @@ func (s *server) handleCreateSecret(w http.ResponseWriter, r *http.Request) {
 	}, s.logger)
 }
 
-func (s *server) validateCreateRequest(request createSecretRequest) ([]byte, []byte, []byte, error) {
+func (s *server) validateCreateRequest(request createSecretRequest, now time.Time) (validatedCreateRequest, error) {
 	if !tokenPattern.MatchString(request.ID) {
-		return nil, nil, nil, errors.New("id must be 22-64 base64url characters")
+		return validatedCreateRequest{}, errors.New("id must be 22-64 base64url characters")
 	}
 
 	ciphertext, err := base64.RawURLEncoding.DecodeString(request.Ciphertext)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("ciphertext must be base64url: %w", err)
+		return validatedCreateRequest{}, fmt.Errorf("ciphertext must be base64url: %w", err)
 	}
 	if len(ciphertext) == 0 {
-		return nil, nil, nil, errors.New("ciphertext is required")
+		return validatedCreateRequest{}, errors.New("ciphertext is required")
 	}
 	if len(ciphertext) > s.maxSecretBytes+32 {
-		return nil, nil, nil, fmt.Errorf("ciphertext exceeds %d bytes", s.maxSecretBytes+32)
+		return validatedCreateRequest{}, fmt.Errorf("ciphertext exceeds %d bytes", s.maxSecretBytes+32)
 	}
 
 	nonce, err := base64.RawURLEncoding.DecodeString(request.Nonce)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("nonce must be base64url: %w", err)
+		return validatedCreateRequest{}, fmt.Errorf("nonce must be base64url: %w", err)
 	}
 	if len(nonce) != 12 {
-		return nil, nil, nil, fmt.Errorf("nonce must be 12 bytes, got %d", len(nonce))
+		return validatedCreateRequest{}, fmt.Errorf("nonce must be 12 bytes, got %d", len(nonce))
 	}
 
 	consumeVerifier, err := base64.RawURLEncoding.DecodeString(request.ConsumeVerifier)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("consumeVerifier must be base64url: %w", err)
+		return validatedCreateRequest{}, fmt.Errorf("consumeVerifier must be base64url: %w", err)
 	}
 	if len(consumeVerifier) != 32 {
-		return nil, nil, nil, fmt.Errorf("consumeVerifier must be 32 bytes, got %d", len(consumeVerifier))
+		return validatedCreateRequest{}, fmt.Errorf("consumeVerifier must be 32 bytes, got %d", len(consumeVerifier))
 	}
 
 	createVerifier, err := base64.RawURLEncoding.DecodeString(request.CreateVerifier)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("createVerifier must be base64url: %w", err)
+		return validatedCreateRequest{}, fmt.Errorf("createVerifier must be base64url: %w", err)
 	}
 	if len(createVerifier) != 32 {
-		return nil, nil, nil, fmt.Errorf("createVerifier must be 32 bytes, got %d", len(createVerifier))
+		return validatedCreateRequest{}, fmt.Errorf("createVerifier must be 32 bytes, got %d", len(createVerifier))
 	}
-	if request.ID != secretIDForCreateVerifier(createVerifier) {
-		return nil, nil, nil, errors.New("id does not match createVerifier")
+	timestamp, _, ok := strings.Cut(request.ID, "_")
+	createdAtUnix, err := strconv.ParseInt(timestamp, 36, 64)
+	if !ok || err != nil || createdAtUnix <= 0 {
+		return validatedCreateRequest{}, errors.New("id must include its creation time; reload the page to create a new link")
+	}
+	if request.ID != secretIDForCreateVerifier(createVerifier, createdAtUnix) {
+		return validatedCreateRequest{}, errors.New("id does not match createVerifier")
+	}
+	if createdAtUnix > now.Add(createClockSkew).Unix() {
+		return validatedCreateRequest{}, errors.New("creation time is in the future")
+	}
+	if createdAtUnix <= now.Add(-createRetryWindow).Unix() {
+		return validatedCreateRequest{}, errCreateExpired
 	}
 
-	return ciphertext, nonce, consumeVerifier, nil
+	return validatedCreateRequest{
+		ciphertext:      ciphertext,
+		nonce:           nonce,
+		consumeVerifier: consumeVerifier,
+		retryDeadline:   time.Unix(createdAtUnix, 0).Add(createRetryWindow),
+	}, nil
 }
 
-func secretIDForCreateVerifier(createVerifier []byte) string {
-	const context = "paper id v1\x00"
+func secretIDForCreateVerifier(createVerifier []byte, createdAtUnix int64) string {
+	timestamp := strconv.FormatInt(createdAtUnix, 36)
+	context := "paper id v2\x00" + timestamp + "\x00"
 	input := make([]byte, len(context)+len(createVerifier))
 	copy(input, context)
 	copy(input[len(context):], createVerifier)
 	sum := sha256.Sum256(input)
-	return base64.RawURLEncoding.EncodeToString(sum[:16])
+	return timestamp + "_" + base64.RawURLEncoding.EncodeToString(sum[:16])
 }
 
 func (s *server) handleConsumeSecret(w http.ResponseWriter, r *http.Request) {

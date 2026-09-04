@@ -598,7 +598,7 @@ func TestCreateHandlerHandlesDuplicateIDWithoutLeakingLiveness(t *testing.T) {
 	probeResponse := httptest.NewRecorder()
 	app.ServeHTTP(probeResponse, probeRequest)
 
-	probeRequestBody.ID = secretIDForCreateVerifier(bytes.Repeat([]byte{14}, 32))
+	probeRequestBody.ID = secretIDForCreateVerifier(bytes.Repeat([]byte{14}, 32), time.Now().Unix())
 	freshBody, err := json.Marshal(probeRequestBody)
 	r.NoError(err)
 	freshRequest := newJSONRequest("/api/secrets", bytes.NewReader(freshBody))
@@ -1308,7 +1308,7 @@ func TestOpenStoreMigratesLegacyDatabase(t *testing.T) {
 
 	var schemaVersion int
 	r.NoError(store.db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&schemaVersion))
-	r.Equal(2, schemaVersion)
+	r.Equal(3, schemaVersion)
 }
 
 func TestStoreConsumeRejectsMissingVerifierWithoutDeleting(t *testing.T) {
@@ -1376,7 +1376,7 @@ func secretCount(t *testing.T, store *store, id string) int {
 func testCreateRequestBody(t *testing.T, ciphertext, nonce, consumeVerifier string, createVerifier []byte) (string, string) {
 	t.Helper()
 	request := createSecretRequest{
-		ID:              secretIDForCreateVerifier(createVerifier),
+		ID:              secretIDForCreateVerifier(createVerifier, time.Now().Unix()),
 		Ciphertext:      ciphertext,
 		Nonce:           nonce,
 		CreateVerifier:  base64.RawURLEncoding.EncodeToString(createVerifier),

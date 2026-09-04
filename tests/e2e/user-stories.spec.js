@@ -26,7 +26,7 @@ test("sender creates a sealed note that cannot be revealed twice", async ({ page
   const shareURL = await page.locator("#share-url").inputValue();
   const parsedShareURL = new URL(shareURL);
   expect(parsedShareURL.origin).toBe(new URL(baseURL).origin);
-  expect(parsedShareURL.pathname).toMatch(/^\/s\/[A-Za-z0-9_-]{22}$/);
+  expect(parsedShareURL.pathname).toMatch(/^\/s\/[a-z0-9]+_[A-Za-z0-9_-]{22}$/);
   expect(parsedShareURL.hash).toMatch(/^#[A-Za-z0-9_-]+$/);
 
   await page.locator("#copy-link").click();
@@ -119,6 +119,30 @@ for (const label of ["How it works", "Security"]) {
     await expect(page.locator("#secret-output")).toHaveText("Troy Barnes");
   });
 }
+
+test("a replayed creation cannot reopen a consumed note", async ({ page, request }) => {
+  let createBody;
+  page.on("request", (sent) => {
+    if (new URL(sent.url()).pathname === "/api/secrets" && sent.method() === "POST") {
+      createBody = sent.postDataJSON();
+    }
+  });
+  await page.goto(baseURL);
+  await page.locator("#secret").fill("Troy Barnes");
+  await page.locator("button[type='submit']").click();
+  await expect(page.locator("#result")).toBeVisible();
+  const shareURL = await page.locator("#share-url").inputValue();
+  await page.goto(shareURL);
+  await page.locator("#reveal-button").click();
+  await expect(page.locator("#secret-output")).toHaveText("Troy Barnes");
+
+  const replay = await request.post(`${baseURL}/api/secrets`, { data: createBody });
+  expect(replay.status()).toBe(410);
+  const secondPage = await page.context().newPage();
+  await secondPage.goto(shareURL);
+  await secondPage.locator("#reveal-button").click();
+  await expect(secondPage.locator("#status")).toContainText("secret is unavailable or already used");
+});
 
 test("mobile layout does not create horizontal overflow in primary states", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

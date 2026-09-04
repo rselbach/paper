@@ -21,6 +21,9 @@ const (
 	maxRateLimitClients    = 10_000
 	maxConfigDuration      = time.Duration(1<<63 - 1)
 	walCheckpointTimeout   = 5 * time.Second
+	createRetryWindow      = 10 * time.Minute
+	createClockSkew        = time.Minute
+	maxCreateReceipts      = 10_000
 )
 
 type config struct {

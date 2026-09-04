@@ -17,6 +17,6 @@ test("share links use the configured public origin, not the browser's", async ({
   const parsedShareURL = new URL(shareURL);
   expect(await page.evaluate(() => window.location.origin)).toBe(browserOrigin);
   expect(parsedShareURL.origin).toBe(publicOrigin);
-  expect(parsedShareURL.pathname).toMatch(/^\/s\/[A-Za-z0-9_-]{22}$/);
+  expect(parsedShareURL.pathname).toMatch(/^\/s\/[a-z0-9]+_[A-Za-z0-9_-]{22}$/);
   expect(parsedShareURL.hash).toMatch(/^#[A-Za-z0-9_-]+$/);
 });
