@@ -10,7 +10,6 @@ readonly LOCAL_ARTIFACT="/tmp/paper-linux-amd64"
 readonly REMOTE_UPLOAD_DIR="/home/exedev"
 readonly REMOTE_ARTIFACT="${REMOTE_UPLOAD_DIR}/paper-linux-amd64"
 readonly REMOTE_BINARY="/usr/local/bin/paper"
-readonly REMOTE_DATABASE="/var/lib/paper/paper.db"
 readonly REMOTE_SERVICE="/etc/systemd/system/${SERVICE}"
 readonly REMOTE_SERVICE_ARTIFACT="${REMOTE_UPLOAD_DIR}/${SERVICE}"
 readonly LOCAL_HEALTH_URL="http://127.0.0.1:8001/healthz"
@@ -211,12 +210,6 @@ backup_server() {
   service_backup_command+=" ${REMOTE_SERVICE}.previous; fi"
   run_remote \
     "${service_backup_command}"
-
-  local backup_command
-  backup_command="if [[ -f ${REMOTE_DATABASE} ]]; then"
-  backup_command+=" sudo -u paper sqlite3 ${REMOTE_DATABASE}"
-  backup_command+=" \".backup '${REMOTE_DATABASE}.previous'\"; fi"
-  run_remote "${backup_command}"
 }
 
 verify_local_version() {

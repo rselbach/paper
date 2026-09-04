@@ -184,6 +184,23 @@ test_install_rolls_back_after_binary_promotion() {
     "rollback count after successful install"
 }
 
+test_backup_excludes_secret_payloads() {
+  reset_install_mocks 0
+  assert_status 0 "deployment file backup" backup_server
+  assert_value 2 "${REMOTE_CALL_COUNT}" "deployment backup command count"
+
+  local command
+  while IFS= read -r command; do
+    if [[ "${command}" != *"${REMOTE_BINARY}"* \
+      && "${command}" != *"${REMOTE_SERVICE}"* ]]; then
+      fail "backup accesses files outside the deployment: ${command}"
+    fi
+    if [[ "${command}" == *paper.db* || "${command}" == *sqlite3* ]]; then
+      fail "backup retains secret payloads: ${command}"
+    fi
+  done <"${REMOTE_COMMAND_LOG}"
+}
+
 test_local_install_propagates_failures() {
   SUDO_CALL_COUNT=0
   SUDO_FAIL_AT=1
@@ -220,6 +237,7 @@ main() {
   test_public_version_classification
   assert_public_commands_are_bounded
   test_install_rolls_back_after_binary_promotion
+  test_backup_excludes_secret_payloads
   test_local_install_propagates_failures
   printf 'deploy-server tests passed\n'
 }
